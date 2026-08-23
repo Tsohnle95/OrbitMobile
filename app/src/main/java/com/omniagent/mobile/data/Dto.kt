@@ -16,6 +16,7 @@ data class SessionDto(
     val time: SessionTimeDto = SessionTimeDto(),
     val cost: Double = 0.0,
     val tokens: TokenUsageDto? = null,
+    val model: JsonObject? = null,
 ) {
     val displayTitle: String
         get() = title?.takeIf { it.isNotBlank() } ?: "Untitled session"

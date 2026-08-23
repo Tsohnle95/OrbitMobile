@@ -10,9 +10,17 @@ Wi-Fi, so you can create, watch, and steer agent sessions from your phone.
   system dark mode). Tokens transcribed from
   `src/renderer/src/styles/_foundation.scss`.
 - Pairing: scan a QR code printed by the launcher script (URL + basic-auth
-  password), stored in EncryptedSharedPreferences
+  password), stored in EncryptedSharedPreferences. Pair to the Mac's
+  Tailscale IP (100.x.y.z) for access from anywhere — cellular included.
 - Live streaming via the opencode `/event` SSE endpoint with reconnect +
   backoff, message/part deltas, session status, and permission prompts
+- Model switching: tap the model chip in chat, pick provider → model
+  (`POST /api/session/:id/model`, verified against opencode 1.18.21)
+- Workspaces: new sessions target any project directory on the Mac
+- Session management: rename / delete from the list
+- Voice input: on-device Parakeet TDT v2 (int8, sherpa-onnx NeMo
+  transducer). Tap mic → recording pulse + X → X stops, transcribes into
+  the draft. Fully offline; ~661 MB model downloads once on first use.
 
 ## Quick start
 
@@ -59,6 +67,9 @@ are unsigned.
 | Send prompt | `POST /session/:id/message {parts:[{type:"text", text}]}` |
 | Abort | `POST /session/:id/abort` |
 | Permissions | `GET /permission`, `POST /permission/:requestID/reply {reply: once\|always\|reject}` |
+| Providers/models | `GET /provider` → `{all:[{id,name,models{}}], connected:[ids]}` |
+| Set session model | `POST /api/session/:id/model {model:{id, providerID}}` → 204 |
+| Project dirs | `GET /project/:id/directories` → `[{directory}]` |
 | Event stream | `GET /event` (SSE, `data: {id, type, properties}` frames) |
 
 Handled events: `message.updated`, `message.part.updated`, `session.status`,

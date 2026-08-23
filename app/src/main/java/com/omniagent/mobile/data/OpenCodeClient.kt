@@ -175,6 +175,34 @@ class OpenCodeClient(
         get("/agent").ok().body<List<AgentDto>>()
     }.getOrDefault(emptyList())
 
+    suspend fun providers(): ProviderListDto? = runCatching {
+        get("/provider").ok().body<ProviderListDto>()
+    }.getOrNull()
+
+    suspend fun projectDirectories(projectId: String): List<String> = runCatching {
+        val dirs = get("/project/$projectId/directories")
+            .ok()
+            .body<List<Map<String, String>>>()
+            .mapNotNull { it["directory"] }
+        dirs
+    }.getOrDefault(emptyList())
+
+    suspend fun setSessionModel(sessionId: String, providerId: String, modelId: String) {
+        postJson(
+            "/api/session/$sessionId/model",
+            buildJsonObject {
+                put("model", buildJsonObject {
+                    put("id", modelId)
+                    put("providerID", providerId)
+                })
+            },
+        ).ok()
+    }
+
+    suspend fun sessionStatus(): JsonObject = runCatching {
+        get("/session/status").ok().body<JsonObject>()
+    }.getOrDefault(JsonObject(emptyMap()))
+
     suspend fun permissions(): List<PermissionRequestDto> = runCatching {
         get("/permission").ok().body<List<PermissionRequestDto>>()
     }.getOrDefault(emptyList())

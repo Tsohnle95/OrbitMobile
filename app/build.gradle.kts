@@ -22,8 +22,8 @@ android {
         applicationId = "com.omniagent.mobile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
         vectorDrawables { useSupportLibrary = true }
     }
 
@@ -98,6 +98,7 @@ dependencies {
 
     implementation("com.google.zxing:core:3.5.3")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    implementation(files("libs/sherpa-onnx-1.13.6.aar"))
     implementation("io.ktor:ktor-client-core:2.3.12")
     implementation("io.ktor:ktor-client-cio:2.3.12")
     implementation("io.ktor:ktor-client-auth:2.3.12")

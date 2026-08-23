@@ -33,10 +33,13 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -44,20 +47,24 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.omniagent.mobile.app.ChatMessage
 import com.omniagent.mobile.app.ChatViewModel
 import com.omniagent.mobile.data.ServerTarget
-import com.omniagent.mobile.data.SessionDto
+import com.omniagent.mobile.data.ProviderModelDto
 import com.omniagent.mobile.data.ToolStateDto
 import com.omniagent.mobile.ui.theme.LocalOmniColors
+import com.omniagent.mobile.voice.SpeechManager
+import com.omniagent.mobile.voice.VoiceButton
 
 @Composable
 fun ChatScreen(
     sessionId: String,
     target: ServerTarget,
     password: String?,
+    speech: SpeechManager,
     onBack: () -> Unit,
     viewModel: ChatViewModel = viewModel(),
 ) {
     val colors = LocalOmniColors.current
     val state by viewModel.state.collectAsStateWithLifecycle()
+    var showModelPicker by remember { mutableStateOf(false) }
 
     LaunchedEffect(sessionId) {
         viewModel.start(sessionId, target, password)
@@ -84,7 +91,10 @@ fun ChatScreen(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.clip(RoundedCornerShape(999.dp)),
+                ) {
                     Box(
                         modifier = Modifier
                             .padding(end = 6.dp, top = 1.dp)
@@ -95,13 +105,26 @@ fun ChatScreen(
                     Text(
                         when {
                             state.busy -> "working…"
-                            state.connected -> state.session?.directory?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "connected"
+                            state.connected ->
+                                state.session?.directory?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+                                    ?: "connected"
                             else -> "reconnecting"
                         },
                         style = MaterialTheme.typography.labelMedium,
                         color = colors.textFaint,
+                        maxLines = 1,
                     )
                 }
+            }
+            TextButton(onClick = { showModelPicker = true }) {
+                Text(
+                    currentModelLabel(state),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = colors.accent,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.widthIn(max = 130.dp),
+                )
             }
             if (state.busy) {
                 TextButton(onClick = { viewModel.abort() }) {
@@ -125,11 +148,34 @@ fun ChatScreen(
         Composer(
             draft = state.draft,
             enabled = !state.busy && !state.sending,
+            speech = speech,
             onDraftChange = { viewModel.updateDraft(it) },
             onSend = { viewModel.send() },
         )
     }
+
+    if (showModelPicker) {
+        ModelPickerSheet(
+            providers = state.providers.map { group ->
+                ProviderEntry(
+                    id = group.id,
+                    name = group.name,
+                    connected = group.connected,
+                    models = group.models.map { m ->
+                        ProviderModelDto(id = m.modelId, name = m.modelName)
+                    },
+                )
+            },
+            currentProviderId = state.currentProviderId,
+            currentModelId = state.currentModelId,
+            onSelect = { providerId, modelId -> viewModel.setModel(providerId, modelId) },
+            onDismiss = { showModelPicker = false },
+        )
+    }
 }
+
+private fun currentModelLabel(state: com.omniagent.mobile.app.ChatUiState): String =
+    state.currentModelId ?: "model"
 
 @Composable
 private fun MessageList(messages: List<ChatMessage>, modifier: Modifier = Modifier) {
@@ -254,6 +300,7 @@ private fun ThinkingDots() {
 private fun Composer(
     draft: String,
     enabled: Boolean,
+    speech: SpeechManager,
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
 ) {
@@ -261,9 +308,18 @@ private fun Composer(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .padding(horizontal = 10.dp, vertical = 8.dp),
         verticalAlignment = Alignment.Bottom,
     ) {
+        VoiceButton(
+            speech = speech,
+            disabled = !enabled,
+            onTranscribed = { text ->
+                onDraftChange(if (draft.isBlank()) text else "$draft $text")
+            },
+            modifier = Modifier.padding(bottom = 6.dp),
+        )
+        Spacer(Modifier.width(2.dp))
         OutlinedTextField(
             value = draft,
             onValueChange = onDraftChange,
@@ -286,11 +342,9 @@ private fun Composer(
                 .clip(CircleShape)
                 .background(
                     if (draft.isNotBlank()) {
-                        androidx.compose.ui.graphics.Brush.linearGradient(
-                            listOf(colors.sendBackgroundTop, colors.sendBackgroundBottom)
-                        )
+                        Brush.linearGradient(listOf(colors.sendBackgroundTop, colors.sendBackgroundBottom))
                     } else {
-                        androidx.compose.ui.graphics.Brush.linearGradient(listOf(colors.bgActivePill, colors.bgActivePill))
+                        Brush.linearGradient(listOf(colors.bgActivePill, colors.bgActivePill))
                     }
                 ),
             contentAlignment = Alignment.Center,

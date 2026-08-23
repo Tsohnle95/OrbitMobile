@@ -8,6 +8,7 @@ import com.omniagent.mobile.data.OpenCodeClient
 import com.omniagent.mobile.data.PairingStore
 import com.omniagent.mobile.data.PartDto
 import com.omniagent.mobile.data.PermissionRequestDto
+import com.omniagent.mobile.data.ProviderListDto
 import com.omniagent.mobile.data.ServerTarget
 import com.omniagent.mobile.data.SessionDto
 import com.omniagent.mobile.data.ToolStateDto
@@ -16,8 +17,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 
 data class ChatMessage(
     val id: String,
@@ -28,6 +29,19 @@ data class ChatMessage(
     val time: Long = 0,
 )
 
+data class ModelOption(
+    val providerId: String,
+    val modelName: String,
+    val modelId: String,
+)
+
+data class ProviderGroup(
+    val id: String,
+    val name: String,
+    val connected: Boolean,
+    val models: List<ModelOption>,
+)
+
 data class ChatUiState(
     val session: SessionDto? = null,
     val messages: List<ChatMessage> = emptyList(),
@@ -36,6 +50,9 @@ data class ChatUiState(
     val draft: String = "",
     val sending: Boolean = false,
     val connected: Boolean = true,
+    val providers: List<ProviderGroup> = emptyList(),
+    val currentProviderId: String? = null,
+    val currentModelId: String? = null,
 )
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
@@ -58,9 +75,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val full = runCatching { client!!.session(sessionId) }.getOrNull()
             if (full != null) {
-                _state.value = _state.value.copy(session = full)
+                val modelObj = full.model
+                _state.value = _state.value.copy(
+                    session = full,
+                    currentProviderId = modelObj?.get("providerID")?.let { str(it) },
+                    currentModelId = modelObj?.get("id")?.let { str(it) },
+                )
             }
         }
+        loadProviders()
         refresh()
         streamJob = client!!.eventStream().connect(
             scope = viewModelScope,
@@ -71,6 +94,49 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 if (connected) refresh()
             },
         )
+    }
+
+    private fun loadProviders() {
+        val c = client ?: return
+        viewModelScope.launch {
+            val list: ProviderListDto? = runCatching { c.providers() }.getOrNull()
+            if (list != null) {
+                val groups = list.all.map { p ->
+                    ProviderGroup(
+                        id = p.id,
+                        name = p.name ?: p.id,
+                        connected = list.connected.contains(p.id),
+                        models = p.models.values.map { m ->
+                            ModelOption(
+                                providerId = p.id,
+                                modelName = m.name ?: m.id,
+                                modelId = m.id,
+                            )
+                        }.sortedBy { it.modelId.lowercase() },
+                    )
+                }.filter { it.models.isNotEmpty() }
+                    .sortedWith(compareByDescending<ProviderGroup> { it.connected }.thenBy { it.name.lowercase() })
+                _state.value = _state.value.copy(providers = groups)
+            }
+        }
+    }
+
+    fun setModel(providerId: String, modelId: String) {
+        val c = client ?: return
+        val sessionId = _state.value.session?.id ?: return
+        _state.value = _state.value.copy(currentProviderId = providerId, currentModelId = modelId)
+        viewModelScope.launch {
+            runCatching { c.setSessionModel(sessionId, providerId, modelId) }
+            runCatching {
+                client!!.session(sessionId).let { full ->
+                    _state.value = _state.value.copy(
+                        session = full,
+                        currentProviderId = full.model?.get("providerID")?.let { str(it) },
+                        currentModelId = full.model?.get("id")?.let { str(it) },
+                    )
+                }
+            }
+        }
     }
 
     fun updateDraft(value: String) {

@@ -26,20 +26,22 @@ import com.omniagent.mobile.ui.chat.ChatScreen
 import com.omniagent.mobile.ui.pairing.PairScreen
 import com.omniagent.mobile.ui.sessions.SessionsScreen
 import com.omniagent.mobile.ui.theme.OmniAgentTheme
+import com.omniagent.mobile.voice.SpeechManager
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             OmniAgentTheme {
-                AppRoot(intent = intent)
+                val speech = remember { SpeechManager(applicationContext) }
+                AppRoot(intent = intent, speech = speech)
             }
         }
     }
 }
 
 @Composable
-fun AppRoot(intent: Intent?) {
+fun AppRoot(intent: Intent?, speech: SpeechManager) {
     val navController = rememberNavController()
     val pairViewModel: PairViewModel = viewModel()
     val pairState by pairViewModel.state.collectAsStateWithLifecycle()
@@ -79,6 +81,7 @@ fun AppRoot(intent: Intent?) {
                 sessionId = sessionId,
                 target = pairing.target,
                 password = pairing.target.password,
+                speech = speech,
                 onBack = { navController.popBackStack() },
             )
         }
