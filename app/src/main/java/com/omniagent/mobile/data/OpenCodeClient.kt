@@ -18,12 +18,15 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.add
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.add
 import java.net.URLEncoder
 
 class OmniApiException(val status: HttpStatusCode, message: String) : Exception(message)
@@ -39,15 +42,21 @@ data class ServerTarget(
 
 /**
  * HTTP client for a headless `opencode serve` endpoint.
- * Wire shapes verified against opencode 1.18.21 (see mobile/README.md).
+ * Speaks both wire flavors:
+ *  - V1 (opencode 1.x): /session, /agent, parts[] prompts
+ *  - V2 (opencode 2.x beta): /api/ paths, "data" envelopes, text-field prompts
+ * Flavor auto-detected from the served OpenAPI document.
  */
 class OpenCodeClient(
     private val target: ServerTarget,
     private val json: Json = defaultJson,
 ) {
+    var flavor: ApiFlavor = ApiFlavor.V1
+        private set
+
     private val client = HttpClient {
         expectSuccess = false
-        install(UserAgent) { agent = "OmniAgentMobile/0.1" }
+        install(UserAgent) { agent = "OmniAgentMobile/0.3" }
         install(ContentNegotiation) { json(json) }
         if (!target.password.isNullOrBlank()) {
             install(Auth) {
@@ -78,24 +87,25 @@ class OpenCodeClient(
             val atIndex = rest.indexOf('@')
             if (atIndex >= 0) {
                 val userInfo = rest.substring(0, atIndex)
-                rest = rest.substring(atIndex + 1)
-                val colon = userInfo.indexOf(':')
-                if (colon >= 0) {
-                    user = userInfo.substring(0, colon).ifBlank { "opencode" }
-                    pass = userInfo.substring(colon + 1)
+                val sep = userInfo.indexOf(':')
+                if (sep >= 0) {
+                    user = userInfo.substring(0, sep)
+                    pass = userInfo.substring(sep + 1)
+                } else {
+                    pass = userInfo
                 }
+                rest = rest.substring(atIndex + 1)
             }
             var token: String? = null
-            Regex("^([^/@]+)/([A-Za-z0-9+/=_-]{6,})$").find(rest)?.let { m ->
-                token = m.groupValues[2]
-                rest = m.groupValues[1]
-            }
             val slash = rest.indexOf('/')
-            if (slash >= 0) rest = rest.substring(0, slash)
+            if (slash >= 0) {
+                token = rest.substring(slash + 1).takeIf { it.isNotBlank() }
+                rest = rest.substring(0, slash)
+            }
             val colon = rest.lastIndexOf(':')
             val host: String
             val port: Int
-            if (colon >= 0) {
+            if (colon > 0) {
                 host = rest.substring(0, colon)
                 port = rest.substring(colon + 1).toIntOrNull() ?: return null
             } else {
@@ -129,29 +139,68 @@ class OpenCodeClient(
         }
     }
 
-    suspend fun health(): HealthDto = get("/global/health").ok().body()
-
-    suspend fun projects(): List<ProjectDto> = get("/project").ok().body()
-
-    suspend fun sessions(directory: String?): List<SessionDto> {
-        val path = if (directory.isNullOrBlank()) "/session"
-        else "/session?directory=${urlEncode(directory)}"
-        return get(path).ok().body()
+    suspend fun detectFlavor(): ApiFlavor = withContext(Dispatchers.IO) {
+        val v1doc = runCatching {
+            val r = client.get("${target.baseUrl}/doc")
+            if (r.status.value == 200) r.body<String>() else ""
+        }.getOrDefault("")
+        flavor = when {
+            v1doc.trimStart().startsWith("{") && v1doc.contains("\"/api/session") -> ApiFlavor.V2
+            v1doc.trimStart().startsWith("{") -> ApiFlavor.V1
+            else -> {
+                val v2doc = runCatching {
+                    val r = client.get("${target.baseUrl}/openapi.json")
+                    if (r.status.value == 200) r.body<String>() else ""
+                }.getOrDefault("")
+                if (v2doc.trimStart().startsWith("{")) ApiFlavor.V2 else ApiFlavor.V1
+            }
+        }
+        flavor
     }
 
-    suspend fun session(id: String): SessionDto = get("/session/$id").ok().body()
+    suspend fun health(): HealthDto = when (flavor) {
+        ApiFlavor.V1 -> get("/global/health").ok().body()
+        ApiFlavor.V2 -> {
+            get("/api/project").ok()
+            HealthDto(healthy = true, version = "2.x")
+        }
+    }
+
+    suspend fun projects(): List<ProjectDto> {
+        val text = get(Wire.projectsPath(flavor)).ok().body<String>()
+        return json.decodeFromString(
+            ListSerializer(ProjectDto.serializer()),
+            Wire.unwrapList(text, flavor),
+        )
+    }
+
+    suspend fun sessions(directory: String?): List<SessionDto> {
+        val text = get(Wire.sessionsPath(flavor, directory)).ok().body<String>()
+        return json.decodeFromString(
+            ListSerializer(SessionDto.serializer()),
+            Wire.unwrapList(text, flavor),
+        )
+    }
+
+    suspend fun session(id: String): SessionDto {
+        val text = get(Wire.sessionPath(flavor, id)).ok().body<String>()
+        return json.decodeFromString(SessionDto.serializer(), Wire.unwrap(text, flavor))
+    }
 
     suspend fun createSession(title: String?, directory: String?): SessionDto {
         val body = buildJsonObject {
             title?.takeIf { it.isNotBlank() }?.let { put("title", it) }
-            directory?.takeIf { it.isNotBlank() }?.let { put("directory", it) }
+            if (flavor == ApiFlavor.V1) {
+                directory?.takeIf { it.isNotBlank() }?.let { put("directory", it) }
+            }
         }
-        return postJson("/session", body).ok().body()
+        val text = postJson(Wire.sessionsPath(flavor, directory), body).ok().body<String>()
+        return json.decodeFromString(SessionDto.serializer(), Wire.unwrap(text, flavor))
     }
 
     suspend fun renameSession(id: String, title: String) {
         io {
-            client.patch("${target.baseUrl}/session/$id") {
+            client.patch("${target.baseUrl}${Wire.sessionPath(flavor, id)}") {
                 header("Content-Type", "application/json")
                 setBody(json.encodeToString(JsonObject.serializer(), buildJsonObject { put("title", title) }))
             }
@@ -159,38 +208,50 @@ class OpenCodeClient(
     }
 
     suspend fun deleteSession(id: String) {
-        io { client.delete("${target.baseUrl}/session/$id") }.ok()
+        io { client.delete("${target.baseUrl}${Wire.sessionPath(flavor, id)}") }.ok()
     }
 
-    suspend fun messages(sessionId: String): List<MessageWithPartsDto> =
-        get("/session/$sessionId/message").ok().body()
+    suspend fun messages(sessionId: String): List<MessageWithPartsDto> {
+        val text = get(Wire.messagesPath(flavor, sessionId)).ok().body<String>()
+        return json.decodeFromString(
+            ListSerializer(MessageWithPartsDto.serializer()),
+            Wire.unwrapList(text, flavor),
+        )
+    }
 
     suspend fun sendMessage(sessionId: String, text: String, agent: String? = null): HttpResponse =
-        postJson("/session/$sessionId/message", Companion.promptBody(text, agent))
+        postJson(Wire.promptPath(flavor, sessionId), Wire.promptBody(flavor, text, agent))
 
     suspend fun abortSession(sessionId: String) {
-        postJson("/session/$sessionId/abort", buildJsonObject { }).ok()
+        runCatching {
+            postJson(Wire.abortPath(flavor, sessionId), buildJsonObject { }).ok()
+        }
     }
 
     suspend fun agents(): List<AgentDto> = runCatching {
-        get("/agent").ok().body<List<AgentDto>>()
+        val text = get(Wire.agentsPath(flavor)).ok().body<String>()
+        val element = json.parseToJsonElement(Wire.unwrap(text, flavor))
+        val arrayElement = when {
+            element is JsonObject && element.containsKey("data") -> element["data"]!!.jsonArray
+            else -> element.jsonArray
+        }
+        json.decodeFromString(ListSerializer(AgentDto.serializer()), arrayElement.toString())
     }.getOrDefault(emptyList())
 
     suspend fun providers(): ProviderListDto? = runCatching {
-        get("/provider").ok().body<ProviderListDto>()
+        val text = get(Wire.providersPath(flavor)).ok().body<String>()
+        json.decodeFromString(ProviderListDto.serializer(), Wire.unwrap(text, flavor))
     }.getOrNull()
 
     suspend fun projectDirectories(projectId: String): List<String> = runCatching {
-        val dirs = get("/project/$projectId/directories")
-            .ok()
-            .body<List<Map<String, String>>>()
-            .mapNotNull { it["directory"] }
-        dirs
+        val dirs: List<Map<String, String>> =
+            get(Wire.worktreesPath(flavor, projectId)).ok().body()
+        dirs.mapNotNull { it["directory"] }
     }.getOrDefault(emptyList())
 
     suspend fun setSessionModel(sessionId: String, providerId: String, modelId: String) {
         postJson(
-            "/api/session/$sessionId/model",
+            Wire.modelPath(flavor, sessionId),
             buildJsonObject {
                 put("model", buildJsonObject {
                     put("id", modelId)
@@ -201,7 +262,7 @@ class OpenCodeClient(
     }
 
     suspend fun sessionStatus(): JsonObject = runCatching {
-        get("/session/status").ok().body<JsonObject>()
+        get(Wire.statusPath(flavor)).ok().body<JsonObject>()
     }.getOrDefault(JsonObject(emptyMap()))
 
     suspend fun vcsStatus(directory: String): List<VcsStatusFileDto> = runCatching {
@@ -235,19 +296,25 @@ class OpenCodeClient(
     }.getOrDefault(emptyList())
 
     suspend fun todos(sessionId: String): List<TodoItemDto> = runCatching {
-        val out: List<TodoItemDto> = get("/session/$sessionId/todo").ok().body()
+        val out: List<TodoItemDto> = get(Wire.todosPath(flavor, sessionId)).ok().body()
         out
     }.getOrDefault(emptyList())
 
     suspend fun permissions(): List<PermissionRequestDto> = runCatching {
-        get("/permission").ok().body<List<PermissionRequestDto>>()
+        val text = get("/permission").ok().body<String>()
+        json.decodeFromString(ListSerializer(PermissionRequestDto.serializer()), Wire.unwrap(text, flavor))
     }.getOrDefault(emptyList())
 
     suspend fun replyPermission(requestId: String, reply: String) {
         postJson("/permission/$requestId/reply", buildJsonObject { put("reply", reply) }).ok()
     }
 
-    fun eventStream(): SSEStream = SSEStream(client, target.baseUrl, json)
+    private suspend fun rawList(call: suspend () -> HttpResponse): String {
+        val text = call().ok().body<String>()
+        return Wire.unwrap(text, flavor)
+    }
+
+    fun eventStream(): SSEStream = SSEStream(client, target.baseUrl, json, Wire.eventPath(flavor))
 
     fun close() {
         client.close()

@@ -80,6 +80,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         client = OpenCodeClient(target)
         _state.value = ChatUiState(session = SessionDto(id = sessionId))
         viewModelScope.launch {
+            runCatching { client!!.detectFlavor() }
             val full = runCatching { client!!.session(sessionId) }.getOrNull()
             if (full != null) {
                 val modelObj = full.model

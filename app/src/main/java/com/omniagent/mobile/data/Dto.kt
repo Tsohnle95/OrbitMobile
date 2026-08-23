@@ -116,8 +116,9 @@ data class AgentDto(
 @Serializable
 data class ProjectDto(
     val id: String,
-    val worktree: String = "",
+    val worktree: String? = null,
     val vcs: String? = null,
+    val name: String? = null,
 )
 
 @Serializable

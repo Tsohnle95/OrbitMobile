@@ -52,6 +52,7 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             _state.value = _state.value.copy(loading = _state.value.sessions.isEmpty())
             try {
+                c.detectFlavor()
                 val list = c.sessions(null).filter { it.parentID == null }.sortedByDescending { it.time.updated }
                 val projects = runCatching { c.projects() }.getOrDefault(emptyList())
                 _state.value = SessionsUiState(sessions = list, projects = projects, loading = false)

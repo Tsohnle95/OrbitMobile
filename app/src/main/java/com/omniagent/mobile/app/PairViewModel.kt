@@ -48,6 +48,7 @@ class PairViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val probe = OpenCodeClient(target)
             try {
+                probe.detectFlavor()
                 val health = probe.health()
                 store.save(Pairing(target = target, label = label.ifBlank { target.host }))
                 _state.value = _state.value.copy(

@@ -27,6 +27,7 @@ class SSEStream(
     private val client: HttpClient,
     private val baseUrl: String,
     private val json: Json,
+    private val eventPath: String = "/event",
 ) {
     fun connect(
         scope: CoroutineScope,
@@ -37,7 +38,7 @@ class SSEStream(
         var attempt = 0
         while (isActive) {
             try {
-                client.prepareGet("$baseUrl/event") {
+                client.prepareGet("$baseUrl$eventPath") {
                     header(HttpHeaders.Accept, "text/event-stream")
                     header(HttpHeaders.CacheControl, "no-cache")
                     if (!password.isNullOrBlank()) {
