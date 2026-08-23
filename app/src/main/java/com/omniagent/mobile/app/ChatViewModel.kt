@@ -12,7 +12,9 @@ import com.omniagent.mobile.data.PermissionRequestDto
 import com.omniagent.mobile.data.ProviderListDto
 import com.omniagent.mobile.data.ServerTarget
 import com.omniagent.mobile.data.SessionDto
+import com.omniagent.mobile.data.TodoItemDto
 import com.omniagent.mobile.data.ToolStateDto
+import com.omniagent.mobile.data.VcsDiffFileDto
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -56,6 +58,8 @@ data class ChatUiState(
     val currentModelId: String? = null,
     val agents: List<AgentInfoDto> = emptyList(),
     val currentAgent: String = "build",
+    val todos: List<TodoItemDto> = emptyList(),
+    val changes: List<VcsDiffFileDto> = emptyList(),
 )
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
@@ -157,6 +161,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         _state.value = _state.value.copy(currentAgent = name)
     }
 
+    fun clientForFiles(): OpenCodeClient? = client
+
     fun updateDraft(value: String) {
         _state.value = _state.value.copy(draft = value)
     }
@@ -215,7 +221,27 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 val p = runCatching { c.permissions() }.getOrDefault(emptyList())
                     .firstOrNull { it.sessionID == sessionId }
                 _state.value = _state.value.copy(pendingPermission = p ?: _state.value.pendingPermission)
+                loadTodos()
+                loadChanges()
             }
+        }
+    }
+
+    fun loadTodos() {
+        val c = client ?: return
+        val sessionId = _state.value.session?.id ?: return
+        viewModelScope.launch {
+            val todos = runCatching { c.todos(sessionId) }.getOrDefault(emptyList())
+            _state.value = _state.value.copy(todos = todos)
+        }
+    }
+
+    fun loadChanges() {
+        val c = client ?: return
+        val directory = _state.value.session?.directory ?: return
+        viewModelScope.launch {
+            val changes = runCatching { c.vcsDiff(directory) }.getOrDefault(emptyList())
+            _state.value = _state.value.copy(changes = changes)
         }
     }
 

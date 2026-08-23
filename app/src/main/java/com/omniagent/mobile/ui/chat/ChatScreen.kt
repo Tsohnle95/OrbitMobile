@@ -66,6 +66,9 @@ fun ChatScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     var showModelPicker by remember { mutableStateOf(false) }
     var showAgentPicker by remember { mutableStateOf(false) }
+    var showChanges by remember { mutableStateOf(false) }
+    var showTodos by remember { mutableStateOf(false) }
+    var showFiles by remember { mutableStateOf(false) }
 
     LaunchedEffect(sessionId) {
         viewModel.start(sessionId, target, password)
@@ -139,7 +142,24 @@ fun ChatScreen(
                 TextButton(onClick = { viewModel.abort() }) {
                     Text("Stop", color = colors.red)
                 }
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { showFiles = true }) {
+                        Text("Files", style = MaterialTheme.typography.labelLarge, color = colors.textDim)
+                    }
+                    TextButton(onClick = { showChanges = true; viewModel.loadChanges() }) {
+                        Text(
+                            "Changes (${state.changes.size})",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = colors.textDim,
+                        )
+                    }
+                }
             }
+        }
+
+        if (state.todos.isNotEmpty()) {
+            TodoStrip(todos = state.todos, onExpand = { showTodos = true })
         }
 
         MessageList(
@@ -170,6 +190,35 @@ fun ChatScreen(
             onSelect = { viewModel.setAgent(it) },
             onDismiss = { showAgentPicker = false },
         )
+    }
+
+    if (showChanges) {
+        ChangesSheet(
+            changes = state.changes,
+            onDismiss = { showChanges = false },
+        )
+    }
+
+    if (showTodos) {
+        TodosSheet(
+            todos = state.todos,
+            onDismiss = { showTodos = false },
+        )
+    }
+
+    if (showFiles) {
+        val dir = state.session?.directory
+        if (dir != null) {
+            val client = viewModel.clientForFiles()
+            if (client != null) {
+                FilesSheet(
+                    directory = dir,
+                    listDirectory = { d, p -> client.listDirectory(d, p) },
+                    readFile = { d, p -> client.fileContent(d, p) },
+                    onDismiss = { showFiles = false },
+                )
+            }
+        }
     }
 
     if (showModelPicker) {

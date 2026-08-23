@@ -204,6 +204,41 @@ class OpenCodeClient(
         get("/session/status").ok().body<JsonObject>()
     }.getOrDefault(JsonObject(emptyMap()))
 
+    suspend fun vcsStatus(directory: String): List<VcsStatusFileDto> = runCatching {
+        val out: List<VcsStatusFileDto> =
+            get("/vcs/status?directory=${urlEncode(directory)}").ok().body()
+        out
+    }.getOrDefault(emptyList())
+
+    suspend fun vcsDiff(directory: String): List<VcsDiffFileDto> = runCatching {
+        val out: List<VcsDiffFileDto> =
+            get("/vcs/diff?directory=${urlEncode(directory)}&mode=git&context=2").ok().body()
+        out
+    }.getOrDefault(emptyList())
+
+    suspend fun listDirectory(directory: String, path: String): List<FileEntryDto> = runCatching {
+        val out: List<FileEntryDto> =
+            get("/file?path=${urlEncode(path)}&directory=${urlEncode(directory)}").ok().body()
+        out
+    }.getOrDefault(emptyList())
+
+    suspend fun fileContent(directory: String, path: String): String? = runCatching {
+        val dto: FileContentDto =
+            get("/file/content?path=${urlEncode(path)}&directory=${urlEncode(directory)}").ok().body()
+        dto.content
+    }.getOrNull()
+
+    suspend fun findFiles(directory: String, query: String): List<String> = runCatching {
+        val out: List<String> =
+            get("/find/file?query=${urlEncode(query)}&directory=${urlEncode(directory)}").ok().body()
+        out
+    }.getOrDefault(emptyList())
+
+    suspend fun todos(sessionId: String): List<TodoItemDto> = runCatching {
+        val out: List<TodoItemDto> = get("/session/$sessionId/todo").ok().body()
+        out
+    }.getOrDefault(emptyList())
+
     suspend fun permissions(): List<PermissionRequestDto> = runCatching {
         get("/permission").ok().body<List<PermissionRequestDto>>()
     }.getOrDefault(emptyList())
