@@ -22,3 +22,10 @@ data class ProviderModelDto(
     val id: String,
     val name: String? = null,
 )
+
+@Serializable
+data class AgentInfoDto(
+    val name: String,
+    val mode: String? = null,
+    val description: String? = null,
+)

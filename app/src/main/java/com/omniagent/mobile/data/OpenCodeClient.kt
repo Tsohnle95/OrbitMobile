@@ -106,7 +106,8 @@ class OpenCodeClient(
             return ServerTarget(host = host, port = port, password = pass ?: token, username = user)
         }
 
-        fun promptBody(text: String): JsonObject = buildJsonObject {
+        fun promptBody(text: String, agent: String? = null): JsonObject = buildJsonObject {
+            agent?.takeIf { it.isNotBlank() }?.let { put("agent", it) }
             putJsonArray("parts") {
                 add(buildJsonObject {
                     put("type", "text")
@@ -164,8 +165,8 @@ class OpenCodeClient(
     suspend fun messages(sessionId: String): List<MessageWithPartsDto> =
         get("/session/$sessionId/message").ok().body()
 
-    suspend fun sendMessage(sessionId: String, text: String): HttpResponse =
-        postJson("/session/$sessionId/message", Companion.promptBody(text))
+    suspend fun sendMessage(sessionId: String, text: String, agent: String? = null): HttpResponse =
+        postJson("/session/$sessionId/message", Companion.promptBody(text, agent))
 
     suspend fun abortSession(sessionId: String) {
         postJson("/session/$sessionId/abort", buildJsonObject { }).ok()

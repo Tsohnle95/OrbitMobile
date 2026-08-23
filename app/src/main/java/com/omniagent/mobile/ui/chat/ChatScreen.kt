@@ -65,6 +65,7 @@ fun ChatScreen(
     val colors = LocalOmniColors.current
     val state by viewModel.state.collectAsStateWithLifecycle()
     var showModelPicker by remember { mutableStateOf(false) }
+    var showAgentPicker by remember { mutableStateOf(false) }
 
     LaunchedEffect(sessionId) {
         viewModel.start(sessionId, target, password)
@@ -116,6 +117,14 @@ fun ChatScreen(
                     )
                 }
             }
+            TextButton(onClick = { showAgentPicker = true }) {
+                Text(
+                    state.currentAgent,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = colors.textDim,
+                    maxLines = 1,
+                )
+            }
             TextButton(onClick = { showModelPicker = true }) {
                 Text(
                     currentModelLabel(state),
@@ -151,6 +160,15 @@ fun ChatScreen(
             speech = speech,
             onDraftChange = { viewModel.updateDraft(it) },
             onSend = { viewModel.send() },
+        )
+    }
+
+    if (showAgentPicker) {
+        AgentPickerSheet(
+            agents = state.agents,
+            current = state.currentAgent,
+            onSelect = { viewModel.setAgent(it) },
+            onDismiss = { showAgentPicker = false },
         )
     }
 

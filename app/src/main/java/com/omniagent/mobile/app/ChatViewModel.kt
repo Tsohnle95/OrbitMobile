@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.omniagent.mobile.data.MessageWithPartsDto
+import com.omniagent.mobile.data.AgentInfoDto
 import com.omniagent.mobile.data.OpenCodeClient
 import com.omniagent.mobile.data.PairingStore
 import com.omniagent.mobile.data.PartDto
@@ -53,6 +54,8 @@ data class ChatUiState(
     val providers: List<ProviderGroup> = emptyList(),
     val currentProviderId: String? = null,
     val currentModelId: String? = null,
+    val agents: List<AgentInfoDto> = emptyList(),
+    val currentAgent: String = "build",
 )
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
@@ -84,6 +87,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         loadProviders()
+        loadAgents()
         refresh()
         streamJob = client!!.eventStream().connect(
             scope = viewModelScope,
@@ -121,6 +125,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun loadAgents() {
+        val c = client ?: return
+        viewModelScope.launch {
+            val agents: List<AgentInfoDto> = runCatching { c.agents() }.getOrDefault(emptyList())
+                .filter { it.mode != "subagent" }
+                .map { AgentInfoDto(name = it.name, mode = it.mode, description = it.description) }
+            _state.value = _state.value.copy(agents = agents)
+        }
+    }
+
     fun setModel(providerId: String, modelId: String) {
         val c = client ?: return
         val sessionId = _state.value.session?.id ?: return
@@ -139,6 +153,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setAgent(name: String) {
+        _state.value = _state.value.copy(currentAgent = name)
+    }
+
     fun updateDraft(value: String) {
         _state.value = _state.value.copy(draft = value)
     }
@@ -152,7 +170,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         _state.value = s.copy(sending = true, draft = "")
         viewModelScope.launch {
             try {
-                val resp = c.sendMessage(sessionId, text)
+                val resp = c.sendMessage(sessionId, text, s.currentAgent)
                 if (resp.status.value !in 200..299) throw Exception("HTTP ${resp.status.value}")
                 _state.value = _state.value.copy(sending = false)
                 refresh()
