@@ -1,0 +1,17 @@
+# Gradle
+.gradle/
+build/
+app/build/
+
+# IDE
+.idea/
+*.iml
+local.properties
+
+# Signing (never commit)
+keystore.properties
+*.jks
+*.keystore
+
+# Build outputs copied for convenience
+dist/
