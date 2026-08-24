@@ -1,11 +1,11 @@
-# OmniAgent Mobile
+# Orbit Mobile
 
-A calm, minimal Android companion for your OmniAgent desktop workflow. It
+A calm, minimal Android companion for your Orbit desktop workflow. It
 connects directly to a headless `opencode serve` instance on your Mac over
 Wi-Fi, so you can create, watch, and steer agent sessions from your phone.
 
 - Native Android app: Kotlin + Compose Material 3, no webviews
-- Design system: OmniAgent's own tokens (default: light "Paper" theme —
+- Design system: Orbit's own tokens (default: light "Paper" theme —
   white/cream surfaces, sage accent; auto-matches the desktop "Dusk" theme in
   system dark mode). Tokens transcribed from
   `src/renderer/src/styles/_foundation.scss`.
@@ -35,7 +35,7 @@ Wi-Fi, so you can create, watch, and steer agent sessions from your phone.
    password manually.)
 
 2. On your phone, install the APK from `dist/` (see Releases below), open
-   OmniAgent, tap **Scan pairing code**, point it at the terminal.
+   Orbit, tap **Scan pairing code**, point it at the terminal.
 
 3. Create a session or open an existing one and start guiding your agent.
 
@@ -82,12 +82,12 @@ treats it as fire-and-forget and tracks progress via SSE instead.
 ## Layout
 
 ```
-app/src/main/java/com/omniagent/mobile/
+app/src/main/java/com/orbit/mobile/
   MainActivity.kt          navigation: pair → sessions → chat
   app/                     ViewModels (pairing, sessions, chat) + UI state
   data/                    OpenCodeClient (Ktor), SSEStream, DTOs, PairingStore
   qr/                      ZXing QR generate (launcher) + camera analyze
-  ui/theme/                OmniAgent design tokens (Paper + Dusk)
+  ui/theme/                Orbit design tokens (Paper + Dusk)
   ui/pairing/              Pair screen + CameraX QR scanner
   ui/sessions/             Session list
   ui/chat/                 Transcript, tool activity, composer, permission card

@@ -15,11 +15,11 @@ val keystoreProperties = Properties().apply {
 }
 
 android {
-    namespace = "com.omniagent.mobile"
+    namespace = "com.orbit.mobile"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.omniagent.mobile"
+        applicationId = "com.orbit.mobile"
         minSdk = 26
         targetSdk = 35
         versionCode = 3
