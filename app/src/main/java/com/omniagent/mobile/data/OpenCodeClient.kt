@@ -15,6 +15,7 @@ import io.ktor.client.request.patch
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
+import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -245,6 +246,15 @@ class OpenCodeClient(
         json.decodeFromString(ProviderListDto.serializer(), Wire.unwrap(text, flavor))
     }.getOrNull()
 
+    /** v2 flat model catalog from /api/model: [{id, modelID, providerID, name}] */
+    suspend fun v2ModelCatalog(): List<kotlinx.serialization.json.JsonObject>? = runCatching {
+        val text = get("/api/model").ok().body<String>()
+        val element = json.parseToJsonElement(text)
+        val arr = (element as? kotlinx.serialization.json.JsonObject)?.get("data")?.jsonArray
+            ?: element.jsonArray
+        arr.mapNotNull { it as? kotlinx.serialization.json.JsonObject }
+    }.getOrNull()
+
     suspend fun projectDirectories(projectId: String): List<String> = runCatching {
         val dirs: List<Map<String, String>> =
             get(Wire.worktreesPath(flavor, projectId)).ok().body()
@@ -273,29 +283,75 @@ class OpenCodeClient(
         out
     }.getOrDefault(emptyList())
 
-    suspend fun vcsDiff(directory: String): List<VcsDiffFileDto> = runCatching {
-        val out: List<VcsDiffFileDto> =
-            get("/vcs/diff?directory=${urlEncode(directory)}&mode=git&context=2").ok().body()
-        out
-    }.getOrDefault(emptyList())
+    suspend fun vcsDiff(directory: String): List<VcsDiffFileDto> {
+        val text = when (flavor) {
+            ApiFlavor.V1 -> get("/vcs/diff?directory=${urlEncode(directory)}&mode=git&context=2").ok().body<String>()
+            ApiFlavor.V2 -> get("/api/vcs/diff?directory=${urlEncode(directory)}&mode=working&context=2").ok().body<String>()
+        }
+        return json.decodeFromString(ListSerializer(VcsDiffFileDto.serializer()), Wire.unwrap(text, flavor))
+    }
 
-    suspend fun listDirectory(directory: String, path: String): List<FileEntryDto> = runCatching {
-        val out: List<FileEntryDto> =
-            get("/file?path=${urlEncode(path)}&directory=${urlEncode(directory)}").ok().body()
-        out
-    }.getOrDefault(emptyList())
+    suspend fun listDirectory(directory: String, path: String): List<FileEntryDto> {
+        if (flavor == ApiFlavor.V1) {
+            val out: List<FileEntryDto> =
+                get("/file?path=${urlEncode(path)}&directory=${urlEncode(directory)}").ok().body()
+            return out
+        }
+        // v2: GET /api/fs/list?directory=...&path=... -> [{path, type}]
+        val q = buildString {
+            append("/api/fs/list?directory=")
+            append(urlEncode(directory))
+            if (path.isNotBlank()) {
+                append("&path=")
+                append(urlEncode(path))
+            }
+        }
+        val raw: List<Map<String, String>> =
+            json.decodeFromString(ListSerializer(kotlinx.serialization.serializer()), Wire.unwrap(get(q).ok().body(), flavor))
+        return raw.map { entry ->
+            val p = entry["path"] ?: ""
+            FileEntryDto(
+                name = p.trimEnd('/').substringAfterLast('/'),
+                path = p,
+                type = if (p.endsWith("/")) "directory" else "file",
+            )
+        }
+    }
 
-    suspend fun fileContent(directory: String, path: String): String? = runCatching {
-        val dto: FileContentDto =
-            get("/file/content?path=${urlEncode(path)}&directory=${urlEncode(directory)}").ok().body()
-        dto.content
-    }.getOrNull()
+    suspend fun fileContent(directory: String, path: String): String? {
+        if (flavor == ApiFlavor.V1) {
+            return runCatching {
+                val dto: FileContentDto =
+                    get("/file/content?path=${urlEncode(path)}&directory=${urlEncode(directory)}").ok().body()
+                dto.content
+            }.getOrNull()
+        }
+        // v2: GET /api/fs/read/{path}?directory=... -> raw file text, but the
+        // server labels JSON/YAML files with their real content type, which
+        // breaks Ktor ContentNegotiation String decoding. Read via the plain
+        // statement API (bodyAsText) which ignores content type.
+        return withContext(Dispatchers.IO) {
+            runCatching {
+                val resp = client.get("${target.baseUrl}/api/fs/read/$path?directory=${urlEncode(directory)}")
+                if (resp.status.value !in 200..299) return@withContext null
+                resp.bodyAsText()
+            }.getOrNull()
+        }
+    }
 
-    suspend fun findFiles(directory: String, query: String): List<String> = runCatching {
-        val out: List<String> =
-            get("/find/file?query=${urlEncode(query)}&directory=${urlEncode(directory)}").ok().body()
-        out
-    }.getOrDefault(emptyList())
+    suspend fun findFiles(directory: String, query: String): List<String> {
+        if (flavor == ApiFlavor.V1) {
+            val out: List<String> =
+                get("/find/file?query=${urlEncode(query)}&directory=${urlEncode(directory)}").ok().body()
+            return out
+        }
+        val raw: List<Map<String, String>> =
+            json.decodeFromString(
+                ListSerializer(kotlinx.serialization.serializer()),
+                Wire.unwrap(get("/api/fs/find?query=${urlEncode(query)}&directory=${urlEncode(directory)}").ok().body(), flavor),
+            )
+        return raw.mapNotNull { it["path"] }
+    }
 
     suspend fun todos(sessionId: String): List<TodoItemDto> = runCatching {
         val out: List<TodoItemDto> = get(Wire.todosPath(flavor, sessionId)).ok().body()

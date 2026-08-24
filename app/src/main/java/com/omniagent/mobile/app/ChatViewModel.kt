@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.omniagent.mobile.data.MessageWithPartsDto
 import com.omniagent.mobile.data.AgentInfoDto
+import com.omniagent.mobile.data.ApiFlavor
 import com.omniagent.mobile.data.OpenCodeClient
 import com.omniagent.mobile.data.PairingStore
 import com.omniagent.mobile.data.PartDto
@@ -108,6 +109,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private fun loadProviders() {
         val c = client ?: return
         viewModelScope.launch {
+            if (c.flavor == ApiFlavor.V2) {
+                // v2: /api/provider has empty model maps; the real catalog is /api/model
+                val catalog = runCatching { c.v2ModelCatalog() }.getOrNull().orEmpty()
+                val groups = ProviderCatalog.fromV2ModelList(catalog)
+                _state.value = _state.value.copy(providers = groups.filter { it.models.isNotEmpty() })
+                return@launch
+            }
             val list: ProviderListDto? = runCatching { c.providers() }.getOrNull()
             if (list != null) {
                 val groups = list.all.map { p ->

@@ -27,6 +27,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -51,27 +52,39 @@ fun FilesSheet(
     var loading by remember { mutableStateOf(true) }
     var fileContent by remember { mutableStateOf<Pair<String, String>?>(null) }
     var pendingRead by remember { mutableStateOf<String?>(null) }
+    var readKey by remember { mutableStateOf(0) }
     var errorText by remember { mutableStateOf<String?>(null) }
 
-    suspend fun load(path: String) {
+    LaunchedEffect(cwd) {
         loading = true
         errorText = null
-        entries = runCatching { listDirectory(directory, path) }.getOrDefault(emptyList())
+        entries = runCatching { listDirectory(directory, cwd) }.getOrElse {
+            android.util.Log.e("OmniFiles", "list failed", it)
+            emptyList()
+        }
         loading = false
     }
 
-    LaunchedEffect(cwd) { load(cwd) }
-
-    LaunchedEffect(pendingRead) {
+    LaunchedEffect(readKey) {
+        if (readKey == 0) return@LaunchedEffect
         val path = pendingRead ?: return@LaunchedEffect
-        pendingRead = null
         loading = true
         errorText = null
-        runCatching { readFile(directory, path) }
-            .onSuccess { content ->
-                if (content != null) fileContent = path to content else errorText = "Could not read file."
-            }
-            .onFailure { errorText = it.message ?: "Could not read file." }
+        try {
+            val content = readFile(directory, path)
+            android.util.Log.d(
+                "OmniFiles",
+                "read '$path' (dir='$directory') -> ${content?.length ?: "null"} chars"
+            )
+            if (!content.isNullOrEmpty()) fileContent = path to content
+            else errorText = "Empty or unreadable file."
+        } catch (ce: kotlinx.coroutines.CancellationException) {
+            android.util.Log.w("OmniFiles", "read cancelled for '$path'")
+            throw ce
+        } catch (t: Throwable) {
+            android.util.Log.e("OmniFiles", "read failed for '$path'", t)
+            errorText = "${t::class.simpleName}: ${t.message ?: "read failed"}"
+        }
         loading = false
     }
 
@@ -93,7 +106,7 @@ fun FilesSheet(
                 if (cwd.isNotEmpty() || fileContent != null) {
                     IconButton(onClick = {
                         if (fileContent != null) fileContent = null
-                        else cwd = cwd.substringBeforeLast('/', "")
+                        else cwd = cwd.trimEnd('/').substringBeforeLast('/', "")
                     }) {
                         Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Up", tint = colors.textDim)
                     }
@@ -116,7 +129,7 @@ fun FilesSheet(
                 content != null -> LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f, fill = false)
+                        .heightIn(max = 420.dp)
                         .padding(horizontal = 12.dp)
                         .clip(RoundedCornerShape(9.dp))
                         .background(colors.bgInset),
@@ -137,7 +150,7 @@ fun FilesSheet(
                     }
                     item { Spacer(Modifier.height(8.dp)) }
                 }
-                loading && fileContent == null -> Column(
+                loading && content == null -> Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -152,13 +165,13 @@ fun FilesSheet(
                     color = colors.red,
                     modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
                 )
-                !loading && entries.isEmpty() -> Text(
+                entries.isEmpty() -> Text(
                     "Empty folder.",
                     style = MaterialTheme.typography.bodySmall,
                     color = colors.textFaint,
                     modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
                 )
-                else -> LazyColumn(modifier = Modifier.weight(1f, fill = false)) {
+                else -> LazyColumn(modifier = Modifier.heightIn(max = 420.dp)) {
                     items(entries.size) { index ->
                         val entry = entries[index]
                         val isDir = entry.type == "directory"
@@ -170,7 +183,7 @@ fun FilesSheet(
                                         cwd = entry.path
                                     } else {
                                         pendingRead = entry.path
-                                        loading = true
+                                        readKey++
                                     }
                                 }
                                 .padding(horizontal = 18.dp, vertical = 9.dp),

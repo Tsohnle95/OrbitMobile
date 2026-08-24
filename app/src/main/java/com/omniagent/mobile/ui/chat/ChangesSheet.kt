@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -28,6 +27,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -84,7 +84,7 @@ fun ChangesSheet(
                         modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
                     )
                 } else {
-                    LazyColumn(modifier = Modifier.weight(1f, fill = false)) {
+                    LazyColumn(modifier = Modifier.heightIn(max = 420.dp)) {
                         items(changes.size) { index ->
                             val change = changes[index]
                             Row(
@@ -144,7 +144,7 @@ fun DiffPatchView(patch: String) {
             val bg = when {
                 line.startsWith("+") && !line.startsWith("+++") -> colors.green.copy(alpha = 0.13f)
                 line.startsWith("-") && !line.startsWith("---") -> colors.red.copy(alpha = 0.13f)
-                else -> androidx.compose.ui.graphics.Color.Transparent
+                else -> Color.Transparent
             }
             val fg = when {
                 line.startsWith("+") && !line.startsWith("+++") -> colors.green
