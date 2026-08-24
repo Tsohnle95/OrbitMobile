@@ -47,7 +47,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.omniagent.mobile.app.ChatMessage
 import com.omniagent.mobile.app.ChatViewModel
 import com.omniagent.mobile.data.ServerTarget
-import com.omniagent.mobile.data.ProviderModelDto
+import com.omniagent.mobile.ui.chat.ProviderModelRow
 import com.omniagent.mobile.data.ToolStateDto
 import com.omniagent.mobile.ui.theme.LocalOmniColors
 import com.omniagent.mobile.voice.SpeechManager
@@ -229,7 +229,7 @@ fun ChatScreen(
                     name = group.name,
                     connected = group.connected,
                     models = group.models.map { m ->
-                        ProviderModelDto(id = m.modelId, name = m.modelName)
+                        ProviderModelRow(providerId = group.id, modelName = m.modelName, modelId = m.modelId)
                     },
                 )
             },

@@ -23,6 +23,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
@@ -213,10 +214,11 @@ class OpenCodeClient(
 
     suspend fun messages(sessionId: String): List<MessageWithPartsDto> {
         val text = get(Wire.messagesPath(flavor, sessionId)).ok().body<String>()
-        return json.decodeFromString(
-            ListSerializer(MessageWithPartsDto.serializer()),
-            Wire.unwrapList(text, flavor),
-        )
+        val normalized = Wire.unwrapList(text, flavor)
+        val element = json.parseToJsonElement(normalized)
+        return element.jsonArray.map { obj ->
+            MessageWithPartsDto.fromJson(obj.jsonObject, flavor)
+        }
     }
 
     suspend fun sendMessage(sessionId: String, text: String, agent: String? = null): HttpResponse =

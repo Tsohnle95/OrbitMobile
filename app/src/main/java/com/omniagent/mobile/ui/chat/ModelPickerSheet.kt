@@ -13,9 +13,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -30,15 +34,23 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import com.omniagent.mobile.data.ProviderModelDto
 import com.omniagent.mobile.ui.theme.LocalOmniColors
 
 data class ProviderEntry(
     val id: String,
     val name: String,
     val connected: Boolean,
-    val models: List<ProviderModelDto>,
+    val models: List<ProviderModelRow>,
 )
+
+data class ProviderModelRow(
+    val providerId: String,
+    val modelName: String,
+    val modelId: String,
+)
+
+@Composable
+private fun colorsTextDim() = LocalOmniColors.current.textDim
 
 @Composable
 fun ModelPickerSheet(
@@ -48,6 +60,7 @@ fun ModelPickerSheet(
     onSelect: (providerId: String, modelId: String) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val colors = LocalOmniColors.current
     var expandedProvider by remember { mutableStateOf(currentProviderId) }
 
     Dialog(
@@ -57,28 +70,48 @@ fun ModelPickerSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surface, androidx.compose.foundation.shape.RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
+                .heightIn(max = 560.dp)
+                .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(20.dp))
                 .padding(horizontal = 18.dp, vertical = 20.dp),
         ) {
-            Text("Change model", style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(8.dp))
-            LazyColumn(modifier = Modifier.heightIn(max = 520.dp)) {
-                items(providers.size) { index ->
-                    val provider = providers[index]
-                    ProviderRow(
-                        provider = provider,
-                        expanded = expandedProvider == provider.id,
-                        currentModelId = if (provider.id == currentProviderId) currentModelId else null,
-                        onToggle = {
-                            expandedProvider = if (expandedProvider == provider.id) null else provider.id
-                        },
-                        onSelect = { mid ->
-                            onSelect(provider.id, mid)
-                            onDismiss()
-                        },
-                    )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Change model",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = colors.text,
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Rounded.Close, contentDescription = "Close", tint = colors.textDim)
                 }
-                item { Spacer(Modifier.height(16.dp)) }
+            }
+            Spacer(Modifier.height(8.dp))
+            if (providers.isEmpty()) {
+                Text(
+                    "No providers loaded.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.textFaint,
+                    modifier = Modifier.padding(vertical = 12.dp),
+                )
+            } else {
+                LazyColumn(modifier = Modifier.weight(1f, fill = false)) {
+                    items(providers.size) { index ->
+                        val provider = providers[index]
+                        ProviderRow(
+                            provider = provider,
+                            expanded = expandedProvider == provider.id,
+                            currentModelId = if (provider.id == currentProviderId) currentModelId else null,
+                            onToggle = {
+                                expandedProvider = if (expandedProvider == provider.id) null else provider.id
+                            },
+                            onSelect = { mid ->
+                                onSelect(provider.id, mid)
+                                onDismiss()
+                            },
+                        )
+                    }
+                    item { Spacer(Modifier.height(16.dp)) }
+                }
             }
         }
     }
@@ -93,6 +126,7 @@ private fun ProviderRow(
     onSelect: (String) -> Unit,
 ) {
     val colors = LocalOmniColors.current
+    val currentProviderId = provider.models.firstOrNull { it.modelId == currentModelId }?.providerId
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -120,33 +154,38 @@ private fun ProviderRow(
                 style = MaterialTheme.typography.labelMedium,
                 color = colors.textFaint,
             )
+            Spacer(Modifier.size(10.dp))
+            Icon(
+                if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                contentDescription = null,
+                tint = colors.textFaint,
+            )
         }
         if (expanded) {
-            Spacer(Modifier.height(2.dp))
-            provider.models.sortedBy { it.id }.forEach { model ->
+            provider.models.forEach { model ->
+                val selected = model.providerId == currentProviderId && model.modelId == currentModelId
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { onSelect(model.id) }
-                        .padding(start = 16.dp, top = 8.dp, bottom = 8.dp),
+                        .clickable { onSelect(model.modelId) }
+                        .padding(start = 26.dp, top = 7.dp, bottom = 7.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(if (selected) colors.accent else colors.borderStrong),
+                    )
+                    Spacer(Modifier.size(9.dp))
                     Text(
-                        model.name?.takeIf { it.isNotBlank() } ?: model.id,
+                        model.modelName,
                         style = MaterialTheme.typography.bodyMedium,
-                        color = if (model.id == currentModelId) colors.accent else colors.textDim,
-                        modifier = Modifier.weight(1f),
+                        color = if (selected) colors.accent else colors.textDim,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
                     )
-                    if (model.id == currentModelId) {
-                        Icon(
-                            Icons.Rounded.Check,
-                            contentDescription = null,
-                            tint = colors.accent,
-                            modifier = Modifier.size(16.dp),
-                        )
-                    }
                 }
             }
         }

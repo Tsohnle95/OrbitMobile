@@ -1,9 +1,13 @@
 package com.omniagent.mobile.data
 
-import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 
 @Serializable
 data class SessionDto(
@@ -12,7 +16,7 @@ data class SessionDto(
     val directory: String = "",
     val projectID: String? = null,
     val parentID: String? = null,
-    @SerialName("revert") val revert: JsonElement? = null,
+    val revert: JsonElement? = null,
     val time: SessionTimeDto = SessionTimeDto(),
     val cost: Double = 0.0,
     val tokens: TokenUsageDto? = null,
@@ -46,7 +50,7 @@ data class CacheTokensDto(
 data class MessageDto(
     val id: String,
     val role: String,
-    val sessionID: String,
+    val sessionID: String = "",
     val time: MessageTimeDto? = null,
     val cost: Double = 0.0,
     val tokens: TokenUsageDto? = null,
@@ -70,16 +74,81 @@ data class PartDto(
     val text: String? = null,
     val callID: String? = null,
     val tool: String? = null,
+    val name: String? = null,
     val state: JsonObject? = null,
     val metadata: JsonElement? = null,
     val synthetic: Boolean? = null,
 )
 
-@Serializable
+/**
+ * Normalized message with parts. Built from either wire shape:
+ *  - v1: {info:{role,id,time,...}, parts:[{type,text,tool,state}]}
+ *  - v2: {type:"assistant"|"user", id, text?, content?:[{type,text,name,state,...}], time}
+ */
 data class MessageWithPartsDto(
     val info: MessageDto,
-    val parts: List<PartDto> = emptyList(),
-)
+    val parts: List<PartDto>,
+) {
+    @Serializable
+    data class RawV1(
+        val info: MessageDto,
+        val parts: List<PartDto> = emptyList(),
+    )
+
+    companion object {
+        fun fromJson(element: JsonObject, flavor: ApiFlavor): MessageWithPartsDto =
+            if (flavor == ApiFlavor.V1) fromV1(element) else fromV2(element)
+
+        private fun fromV1(obj: JsonObject): MessageWithPartsDto {
+            val json = Wire.json
+            val raw = json.decodeFromJsonElement(RawV1.serializer(), obj)
+            return MessageWithPartsDto(info = raw.info, parts = raw.parts)
+        }
+
+        private fun fromV2(m: JsonObject): MessageWithPartsDto {
+            val type = primitive(m, "type") ?: "user"
+            val id = primitive(m, "id") ?: ""
+            val timeObj = m["time"] as? JsonObject
+            val created = (timeObj?.get("created") as? JsonPrimitive)?.content?.toLongOrNull() ?: 0L
+            val completed = (timeObj?.get("completed") as? JsonPrimitive)?.content?.toLongOrNull()
+            val modelObj = m["model"] as? JsonObject
+
+            val parts = mutableListOf<PartDto>()
+            val topLevelText = primitive(m, "text")
+            if (!topLevelText.isNullOrBlank()) {
+                parts.add(PartDto(type = "text", text = topLevelText))
+            }
+            (m["content"] as? JsonArray)?.forEach { element ->
+                val obj = element as? JsonObject ?: return@forEach
+                when (primitive(obj, "type")) {
+                    "text", "reasoning" -> parts.add(
+                        PartDto(type = "text", text = primitive(obj, "text"))
+                    )
+                    "tool" -> parts.add(
+                        PartDto(
+                            type = "tool",
+                            tool = primitive(obj, "name"),
+                            state = obj["state"] as? JsonObject,
+                        )
+                    )
+                }
+            }
+
+            val info = MessageDto(
+                id = id,
+                role = if (type == "assistant") "assistant" else "user",
+                sessionID = "",
+                time = MessageTimeDto(created = created, completed = completed),
+                modelID = modelObj?.get("id")?.let { (it as? JsonPrimitive)?.content },
+                providerID = modelObj?.get("providerID")?.let { (it as? JsonPrimitive)?.content },
+            )
+            return MessageWithPartsDto(info = info, parts = parts)
+        }
+
+        private fun primitive(obj: JsonObject, key: String): String? =
+            (obj[key] as? JsonPrimitive)?.contentOrNull
+    }
+}
 
 @Serializable
 data class ToolStateDto(
@@ -92,6 +161,15 @@ data class ToolStateDto(
 
 @Serializable
 data class PermissionRequestDto(
+    val id: String,
+    val sessionID: String,
+    val permission: String,
+    val patterns: List<String> = emptyList(),
+    val metadata: JsonObject? = null,
+)
+
+@Serializable
+data class PartInputDto(
     val id: String,
     val sessionID: String,
     val permission: String,
@@ -125,20 +203,4 @@ data class ProjectDto(
 data class HealthDto(
     val healthy: Boolean = false,
     val version: String? = null,
-)
-
-@Serializable
-data class PromptRequestDto(
-    val parts: List<PartInputDto>,
-)
-
-@Serializable
-data class PartInputDto(
-    val type: String = "text",
-    val text: String,
-)
-
-@Serializable
-data class PermissionReplyDto(
-    val reply: String,
 )

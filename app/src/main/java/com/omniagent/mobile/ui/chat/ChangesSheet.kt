@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -14,6 +15,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -26,7 +28,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -50,7 +51,8 @@ fun ChangesSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
+                .heightIn(max = 560.dp)
+                .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(20.dp))
                 .padding(vertical = 16.dp),
         ) {
             Row(
@@ -65,48 +67,56 @@ fun ChangesSheet(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
-                if (selected != null) {
-                    IconButton(onClick = { selected = null }) {
-                        Icon(Icons.Rounded.Close, contentDescription = "Back to list", tint = colors.textDim)
-                    }
+                IconButton(onClick = {
+                    if (selected != null) selected = null else onDismiss()
+                }) {
+                    Icon(Icons.Rounded.Close, contentDescription = "Close", tint = colors.textDim)
                 }
             }
             Spacer(Modifier.height(8.dp))
             val current = selected
             if (current == null) {
-                LazyColumn(modifier = Modifier.heightIn(max = 480.dp)) {
-                    items(changes.size) { index ->
-                        val change = changes[index]
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { selected = change }
-                                .padding(horizontal = 18.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
+                if (changes.isEmpty()) {
+                    Text(
+                        "No uncommitted changes in this workspace yet.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.textFaint,
+                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
+                    )
+                } else {
+                    LazyColumn(modifier = Modifier.weight(1f, fill = false)) {
+                        items(changes.size) { index ->
+                            val change = changes[index]
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { selected = change }
+                                    .padding(horizontal = 18.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
                                 Text(
                                     change.file,
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = colors.text,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Spacer(Modifier.padding(start = 8.dp))
+                                Text(
+                                    "+${change.additions}",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = colors.green,
+                                )
+                                Spacer(Modifier.padding(start = 6.dp))
+                                Text(
+                                    "-${change.deletions}",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = colors.red,
                                 )
                             }
-                            Spacer(Modifier.padding(start = 8.dp))
-                            Text(
-                                "+${change.additions}",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontFamily = FontFamily.Monospace,
-                                color = colors.green,
-                            )
-                            Spacer(Modifier.padding(start = 6.dp))
-                            Text(
-                                "-${change.deletions}",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontFamily = FontFamily.Monospace,
-                                color = colors.red,
-                            )
                         }
                     }
                 }
@@ -123,7 +133,7 @@ fun DiffPatchView(patch: String) {
     LazyColumn(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(max = 460.dp)
+            .heightIn(max = 420.dp)
             .padding(horizontal = 12.dp)
             .clip(RoundedCornerShape(9.dp))
             .background(colors.bgInset),
@@ -134,7 +144,7 @@ fun DiffPatchView(patch: String) {
             val bg = when {
                 line.startsWith("+") && !line.startsWith("+++") -> colors.green.copy(alpha = 0.13f)
                 line.startsWith("-") && !line.startsWith("---") -> colors.red.copy(alpha = 0.13f)
-                else -> Color.Transparent
+                else -> androidx.compose.ui.graphics.Color.Transparent
             }
             val fg = when {
                 line.startsWith("+") && !line.startsWith("+++") -> colors.green

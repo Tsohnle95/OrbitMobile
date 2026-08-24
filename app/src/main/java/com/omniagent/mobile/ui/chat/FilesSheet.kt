@@ -13,8 +13,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.InsertDriveFile
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -28,6 +30,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -48,18 +51,27 @@ fun FilesSheet(
     var loading by remember { mutableStateOf(true) }
     var fileContent by remember { mutableStateOf<Pair<String, String>?>(null) }
     var pendingRead by remember { mutableStateOf<String?>(null) }
+    var errorText by remember { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(cwd) {
+    suspend fun load(path: String) {
         loading = true
-        entries = listDirectory(directory, cwd)
+        errorText = null
+        entries = runCatching { listDirectory(directory, path) }.getOrDefault(emptyList())
         loading = false
     }
+
+    LaunchedEffect(cwd) { load(cwd) }
 
     LaunchedEffect(pendingRead) {
         val path = pendingRead ?: return@LaunchedEffect
         pendingRead = null
-        val content = readFile(directory, path)
-        if (content != null) fileContent = path to content
+        loading = true
+        errorText = null
+        runCatching { readFile(directory, path) }
+            .onSuccess { content ->
+                if (content != null) fileContent = path to content else errorText = "Could not read file."
+            }
+            .onFailure { errorText = it.message ?: "Could not read file." }
         loading = false
     }
 
@@ -70,7 +82,8 @@ fun FilesSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
+                .heightIn(max = 560.dp)
+                .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(20.dp))
                 .padding(vertical = 16.dp),
         ) {
             Row(
@@ -93,14 +106,17 @@ fun FilesSheet(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Rounded.Close, contentDescription = "Close", tint = colors.textDim)
+                }
             }
             Spacer(Modifier.height(8.dp))
             val content = fileContent
-            if (content != null) {
-                LazyColumn(
+            when {
+                content != null -> LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 480.dp)
+                        .weight(1f, fill = false)
                         .padding(horizontal = 12.dp)
                         .clip(RoundedCornerShape(9.dp))
                         .background(colors.bgInset),
@@ -110,7 +126,7 @@ fun FilesSheet(
                         Text(
                             lines[index].ifBlank { " " },
                             style = MaterialTheme.typography.bodySmall,
-                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                            fontFamily = FontFamily.Monospace,
                             color = colors.textDim,
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -121,15 +137,28 @@ fun FilesSheet(
                     }
                     item { Spacer(Modifier.height(8.dp)) }
                 }
-            } else if (loading) {
-                Text(
-                    "Loading…",
+                loading && fileContent == null -> Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 120.dp)
+                        .padding(vertical = 32.dp),
+                ) {
+                    CircularProgressIndicator(color = colors.accent, strokeWidth = 2.5.dp)
+                }
+                errorText != null -> Text(
+                    errorText!!,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.red,
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
+                )
+                !loading && entries.isEmpty() -> Text(
+                    "Empty folder.",
                     style = MaterialTheme.typography.bodySmall,
                     color = colors.textFaint,
                     modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
                 )
-            } else {
-                LazyColumn(modifier = Modifier.heightIn(max = 480.dp)) {
+                else -> LazyColumn(modifier = Modifier.weight(1f, fill = false)) {
                     items(entries.size) { index ->
                         val entry = entries[index]
                         val isDir = entry.type == "directory"
@@ -140,8 +169,8 @@ fun FilesSheet(
                                     if (isDir) {
                                         cwd = entry.path
                                     } else {
-                                        loading = true
                                         pendingRead = entry.path
+                                        loading = true
                                     }
                                 }
                                 .padding(horizontal = 18.dp, vertical = 9.dp),
