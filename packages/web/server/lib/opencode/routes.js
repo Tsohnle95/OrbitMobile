@@ -8,6 +8,8 @@ import {
 } from './config-mutation-response.js';
 import { getClaudeCliAuthStatus } from './claude-cli-auth.js';
 
+const OPENCODE_HEALTH_PATH = process.env.ORBIT_OPENCODE_HEALTH_PATH || '/global/health';
+
 export const registerOpenCodeRoutes = (app, dependencies) => {
   const {
     crypto,
@@ -89,7 +91,7 @@ ${desktopReturn ? `<a class="return" href="orbit://focus/mcp-auth">Return to Orb
 </html>`;
 
   const readOpenCodeCurrentVersion = async () => {
-    const healthResponse = await fetch(buildOpenCodeUrl('/global/health', ''), {
+    const healthResponse = await fetch(buildOpenCodeUrl(OPENCODE_HEALTH_PATH, ''), {
       method: 'GET',
       headers: { Accept: 'application/json', ...getOpenCodeAuthHeaders() },
     });
@@ -295,7 +297,7 @@ ${desktopReturn ? `<a class="return" href="orbit://focus/mcp-auth">Return to Orb
       }
 
       const [healthResponse, latestVersion] = await Promise.all([
-        fetch(buildOpenCodeUrl('/global/health', ''), {
+        fetch(buildOpenCodeUrl(OPENCODE_HEALTH_PATH, ''), {
           method: 'GET',
           headers: { Accept: 'application/json', ...getOpenCodeAuthHeaders() },
         }),
@@ -329,7 +331,7 @@ ${desktopReturn ? `<a class="return" href="orbit://focus/mcp-auth">Return to Orb
 
   app.get('/api/opencode/health', async (_req, res) => {
     try {
-      const healthResponse = await fetch(buildOpenCodeUrl('/global/health', ''), {
+      const healthResponse = await fetch(buildOpenCodeUrl(OPENCODE_HEALTH_PATH, ''), {
         method: 'GET',
         headers: { Accept: 'application/json', ...getOpenCodeAuthHeaders() },
       });
@@ -351,7 +353,7 @@ ${desktopReturn ? `<a class="return" href="orbit://focus/mcp-auth">Return to Orb
 
   app.get('/api/opencode/version', async (_req, res) => {
     try {
-      const healthResponse = await fetch(buildOpenCodeUrl('/global/health', ''), {
+      const healthResponse = await fetch(buildOpenCodeUrl(OPENCODE_HEALTH_PATH, ''), {
         method: 'GET',
         headers: { Accept: 'application/json', ...getOpenCodeAuthHeaders() },
       });
