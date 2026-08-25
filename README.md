@@ -37,6 +37,18 @@ Internal compatibility tokens (relay API host `api.openchamber.dev`,
 upstream GitHub links kept in comments/docs) intentionally still reference
 OpenChamber infrastructure; see the attribution note above.
 
+### Backend health path
+
+The server probes opencode's `/global/health` by default. Beta/newer
+opencode builds that serve HTML on that path need:
+
+```sh
+ORBIT_OPENCODE_HEALTH_PATH=/api/health   # honored by every probe
+```
+
+Without it the mobile app pairs but never flips to "connected" — the
+session bootstrap gates on `{"healthy":true}` from `/api/opencode/health`.
+
 ## Build
 
 Requires bun 1.3+, Node 22+, JDK 21 (`/opt/homebrew/opt/openjdk@21`), and the
