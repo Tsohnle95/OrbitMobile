@@ -1,0 +1,48 @@
+{
+  "name": "orbit-mobile",
+  "version": "0.1.0",
+  "description": "Orbit mobile companion workspace: Capacitor shell, web UI, and server",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.3.14",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "license": "MIT",
+  "scripts": {
+    "build": "bun run --cwd packages/web build && bun run --cwd packages/mobile build:assets",
+    "build:web": "bun run --cwd packages/web build",
+    "build:ui": "bun run --cwd packages/ui build",
+    "sync": "bun run --cwd packages/mobile sync",
+    "build:android:debug": "bun run --cwd packages/mobile build:android:debug",
+    "android:devices": "bun run --cwd packages/mobile android:devices",
+    "android:install": "bun run --cwd packages/mobile android:install",
+    "android:launch": "bun run --cwd packages/mobile android:launch",
+    "android:run": "bun run --cwd packages/mobile android:run",
+    "android:logcat": "bun run --cwd packages/mobile android:logcat",
+    "serve": "bun run --cwd packages/web start",
+    "type-check": "bun run --filter '*' type-check",
+    "type-check:web": "bun run --cwd packages/web type-check",
+    "type-check:ui": "bun run --cwd packages/ui type-check",
+    "type-check:mobile": "bun run --cwd packages/mobile type-check",
+    "lint": "bun run --filter '*' lint",
+    "test": "bun run --cwd packages/ui test && bun run --cwd packages/web test"
+  },
+  "patchedDependencies": {
+    "@tanstack/virtual-core@3.17.3": "bun-patches/@tanstack+virtual-core+3.17.3.patch",
+    "bun-pty@0.4.8": "bun-patches/bun-pty@0.4.8.patch",
+    "ghostty-web@0.4.0": "patches/ghostty-web+0.4.0.patch"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.0.0",
+    "@types/dom-speech-recognition": "^0.0.12",
+    "autoprefixer": "^10.4.21",
+    "babel-plugin-react-compiler": "^1.0.0",
+    "sharp": "^0.35.3",
+    "tailwindcss": "^4.0.0",
+    "tw-animate-css": "^1.3.8"
+  }
+}
