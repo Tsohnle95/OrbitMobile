@@ -29,6 +29,7 @@ data class ChatMessage(
     val role: String,
     val text: String,
     val activity: List<ToolStateDto> = emptyList(),
+    val toolName: String? = null,
     val streaming: Boolean = false,
     val time: Long = 0,
 )
@@ -226,6 +227,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         refreshJob = viewModelScope.launch {
             runCatching {
                 val list = c.messages(sessionId).flatMap { it.toChatMessages() }
+                    .sortedWith(compareBy<ChatMessage> { it.time }.thenBy { it.id })
                 _state.value = _state.value.copy(messages = list)
                 val p = runCatching { c.permissions() }.getOrDefault(emptyList())
                     .firstOrNull { it.sessionID == sessionId }
@@ -295,6 +297,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val c = client ?: return
         runCatching {
             val list = c.messages(sessionId).flatMap { it.toChatMessages() }
+                .sortedWith(compareBy<ChatMessage> { it.time }.thenBy { it.id })
             _state.value = _state.value.copy(messages = list)
         }
     }
@@ -339,6 +342,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             role = "tool",
                             text = "",
                             activity = listOf(tool),
+                            toolName = part.tool,
                             time = created,
                         )
                     )

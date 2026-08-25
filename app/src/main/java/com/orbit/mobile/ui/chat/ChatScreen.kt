@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -23,6 +25,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.ListAlt
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -32,6 +38,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -80,10 +87,14 @@ fun ChatScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
+            .statusBarsPadding()
             .imePadding(),
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 6.dp, vertical = 4.dp)
+                .heightIn(min = 48.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = onBack) {
@@ -122,40 +133,43 @@ fun ChatScreen(
                     )
                 }
             }
-            TextButton(onClick = { showAgentPicker = true }) {
+            TextButton(
+                onClick = { showAgentPicker = true },
+                contentPadding = PaddingValues(horizontal = 8.dp),
+                modifier = Modifier.heightIn(max = 40.dp),
+            ) {
                 Text(
                     state.currentAgent,
                     style = MaterialTheme.typography.labelLarge,
                     color = colors.textDim,
                     maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
-            TextButton(onClick = { showModelPicker = true }) {
+            TextButton(
+                onClick = { showModelPicker = true },
+                contentPadding = PaddingValues(horizontal = 8.dp),
+                modifier = Modifier.heightIn(max = 40.dp),
+            ) {
                 Text(
                     currentModelLabel(state),
                     style = MaterialTheme.typography.labelLarge,
                     color = colors.accent,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.widthIn(max = 130.dp),
+                    modifier = Modifier.widthIn(max = 110.dp),
                 )
             }
-            if (state.busy) {
-                TextButton(onClick = { viewModel.abort() }) {
-                    Text("Stop", color = colors.red)
+            IconButton(onClick = { showFiles = true }) {
+                Icon(Icons.Rounded.Folder, contentDescription = "Files", tint = colors.textDim)
+            }
+            BadgedBox(badge = {
+                if (state.changes.isNotEmpty()) {
+                    Badge { Text("${state.changes.size}") }
                 }
-            } else {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = { showFiles = true }) {
-                        Text("Files", style = MaterialTheme.typography.labelLarge, color = colors.textDim)
-                    }
-                    TextButton(onClick = { showChanges = true; viewModel.loadChanges() }) {
-                        Text(
-                            "Changes (${state.changes.size})",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = colors.textDim,
-                        )
-                    }
+            }) {
+                IconButton(onClick = { showChanges = true; viewModel.loadChanges() }) {
+                    Icon(Icons.Rounded.ListAlt, contentDescription = "Changes", tint = colors.textDim)
                 }
             }
         }
@@ -166,6 +180,7 @@ fun ChatScreen(
 
         MessageList(
             messages = state.messages,
+            busy = state.busy,
             modifier = Modifier.weight(1f),
         )
 
@@ -247,15 +262,32 @@ private fun currentModelLabel(state: com.orbit.mobile.app.ChatUiState): String =
     state.currentModelId ?: "model"
 
 @Composable
-private fun MessageList(messages: List<ChatMessage>, modifier: Modifier = Modifier) {
+private fun MessageList(messages: List<ChatMessage>, busy: Boolean, modifier: Modifier = Modifier) {
     val listState = rememberLazyListState()
-    LaunchedEffect(messages.size, messages.lastOrNull()?.text?.length) {
-        if (messages.isNotEmpty()) listState.animateScrollToItem((messages.size - 1).coerceAtLeast(0))
+    var autoFollow by remember { mutableStateOf(true) }
+
+    // OpenChamber's auto-follow model: pinned to bottom unless the user
+    // scrolled up; re-engage when the user returns to the bottom zone.
+    val atBottom by remember {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull()
+            last == null || last.index >= info.totalItemsCount - 1 &&
+                (info.viewportEndOffset - last.offset - last.size) < 120
+        }
     }
+    LaunchedEffect(atBottom) { if (atBottom) autoFollow = true }
+
+    LaunchedEffect(messages.size, busy) {
+        if (messages.isNotEmpty() && autoFollow) {
+            listState.scrollToItem((messages.size - 1).coerceAtLeast(0))
+        }
+    }
+
     LazyColumn(
         state = listState,
         modifier = modifier.fillMaxWidth(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 18.dp, vertical = 10.dp),
+        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         if (messages.isEmpty()) {
@@ -270,137 +302,6 @@ private fun MessageList(messages: List<ChatMessage>, modifier: Modifier = Modifi
             MessageEntry(message)
         }
     }
-}
-
-@Composable
-private fun MessageEntry(message: ChatMessage) {
-    when {
-        message.role == "tool" -> ToolEntry(message.activity.first())
-        message.role == "reasoning" -> ReasoningEntry(message.text)
-        else -> MessageBubble(message)
-    }
-}
-
-@Composable
-private fun ToolEntry(tool: ToolStateDto) {
-    val colors = LocalOrbitColors.current
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 1.dp),
-    ) {
-        val dotColor = when {
-            tool.status == "completed" -> colors.green
-            tool.status == "error" -> colors.red
-            tool.status == "pending" -> colors.textFaint
-            else -> colors.yellow
-        }
-        Box(
-            Modifier
-                .padding(end = 8.dp)
-                .size(6.dp)
-                .clip(CircleShape)
-                .background(dotColor),
-        )
-        Text(
-            toolTitle(tool),
-            style = MaterialTheme.typography.labelMedium,
-            fontFamily = FontFamily.Monospace,
-            color = colors.textFaint,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
-
-@Composable
-private fun ReasoningEntry(text: String) {
-    val colors = LocalOrbitColors.current
-    Text(
-        text,
-        style = MaterialTheme.typography.bodySmall,
-        fontStyle = FontStyle.Italic,
-        color = colors.textFaint,
-        modifier = Modifier.padding(end = 24.dp),
-    )
-}
-
-@Composable
-private fun MessageBubble(message: ChatMessage) {
-    val colors = LocalOrbitColors.current
-    val isUser = message.role == "user"
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
-    ) {
-        if (!isUser && message.activity.isNotEmpty()) {
-            ToolActivityBlock(message.activity)
-            Spacer(Modifier.size(8.dp))
-        }
-        if (message.text.isNotBlank()) {
-            Box(
-                modifier = Modifier
-                    .widthIn(max = 320.dp)
-                    .clip(
-                        RoundedCornerShape(
-                            topStart = 16.dp,
-                            topEnd = 16.dp,
-                            bottomStart = if (isUser) 16.dp else 5.dp,
-                            bottomEnd = if (isUser) 5.dp else 16.dp,
-                        )
-                    )
-                    .background(if (isUser) colors.accentDim else colors.bgInset)
-                    .padding(horizontal = 13.dp, vertical = 9.dp),
-            ) {
-                Text(message.text, style = MaterialTheme.typography.bodyLarge, color = colors.text)
-            }
-        } else if (!isUser && message.streaming) {
-            ThinkingDots()
-        }
-    }
-}
-
-@Composable
-private fun ToolActivityBlock(tools: List<ToolStateDto>) {
-    val colors = LocalOrbitColors.current
-    val latest = tools.takeLast(2)
-    Column(
-        modifier = Modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(colors.bgInset.copy(alpha = 0.55f))
-            .padding(horizontal = 11.dp, vertical = 7.dp),
-    ) {
-        latest.forEach { tool ->
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                val dotColor = when {
-                    tool.status == "completed" -> colors.green
-                    tool.status == "error" -> colors.red
-                    else -> colors.yellow
-                }
-                Box(
-                    Modifier
-                        .padding(end = 7.dp)
-                        .size(5.dp)
-                        .clip(CircleShape)
-                        .background(dotColor),
-                )
-                Text(
-                    toolTitle(tool),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = colors.textDim,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false),
-                )
-            }
-        }
-    }
-}
-
-private fun toolTitle(tool: ToolStateDto): String {
-    val base = tool.title ?: tool.input?.toString() ?: ""
-    return if (base.isBlank()) "${tool.status}…" else base.take(90)
 }
 
 @Composable
