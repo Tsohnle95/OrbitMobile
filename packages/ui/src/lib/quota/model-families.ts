@@ -10,15 +10,14 @@ export interface ModelFamily {
 /**
  * Strip auth source prefix from model name for display.
  * e.g., "gemini/gemini-2.5-flash" -> "gemini-2.5-flash"
- *       "antigravity/claude-sonnet" -> "claude-sonnet"
  */
 export function getDisplayModelName(modelName: string): string {
-  // Handle prefixes like "gemini/", "antigravity/"
+  // Handle auth source prefixes like "gemini/"
   const slashIndex = modelName.indexOf('/');
   if (slashIndex !== -1) {
     const prefix = modelName.substring(0, slashIndex);
     // Check if it's an auth source prefix
-    if (prefix === 'gemini' || prefix === 'antigravity') {
+    if (prefix === 'gemini') {
       return modelName.substring(slashIndex + 1);
     }
   }
@@ -31,12 +30,6 @@ const GOOGLE_MODEL_FAMILIES: ModelFamily[] = [
     label: 'Gemini',
     matcher: (modelName) => modelName.startsWith('gemini/'),
     order: 1,
-  },
-  {
-    id: 'antigravity-auth',
-    label: 'Antigravity',
-    matcher: (modelName) => modelName.startsWith('antigravity/'),
-    order: 2,
   },
 ];
 
@@ -110,7 +103,7 @@ export function groupModelsByFamilyWithGetter<T>(
 
 /**
  * Get default models for a provider based on simple patterns.
- * For Google provider with gemini/ and antigravity/ prefixes:
+ * For the Google provider with a gemini/ auth prefix:
  * - Gemini 3.x models
  * - All Claude models
  * For the Claude provider: every model it reports a limit for.
@@ -124,7 +117,7 @@ export function getDefaultModels(
     // limit, so every one it names is worth showing by default.
     if (providerId === 'claude') return true;
     const lower = model.toLowerCase();
-    // Handle gemini/ and antigravity/ prefixes
+    // Handle the gemini/ auth prefix
     const modelName = lower.includes('/') ? lower.split('/')[1] : lower;
     // Gemini 3.x
     if (modelName.startsWith('gemini-3-')) return true;
