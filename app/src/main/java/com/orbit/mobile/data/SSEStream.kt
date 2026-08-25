@@ -20,8 +20,14 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 
 /**
- * Long-lived Server-Sent Events reader for GET /event.
- * Frames are "data: {...}" lines separated by blank lines.
+ * Long-lived Server-Sent Events reader.
+ *
+ * v1 frames: {"type": ..., "properties": {...}}
+ * v2 frames: {"type": "session.reasoning.delta", "data": {...}, ...}
+ *
+ * Both shapes are normalized here: the handler receives (type, payload) where
+ * payload is "properties" when present, otherwise the top-level "data" object,
+ * falling back to the whole frame.
  */
 class SSEStream(
     private val client: HttpClient,
@@ -75,7 +81,9 @@ class SSEStream(
         runCatching {
             val root = json.parseToJsonElement(raw).jsonObject
             val type = root["type"]?.toString()?.trim('"') ?: return
-            val payload = root["properties"] as? JsonObject ?: JsonObject(emptyMap())
+            val payload = (root["properties"] as? JsonObject)
+                ?: (root["data"] as? JsonObject)
+                ?: JsonObject(emptyMap())
             onEvent(type, payload)
         }
     }

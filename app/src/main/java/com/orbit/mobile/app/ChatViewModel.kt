@@ -259,6 +259,56 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun handleEvent(type: String, payload: JsonObject) {
         val sessionId = _state.value.session?.id ?: return
         when (type) {
+            // v2 granular streaming events — applied live, no refetch
+            "session.reasoning.delta" -> {
+                if (str(payload["sessionID"]) == sessionId) {
+                    val msgId = str(payload["assistantMessageID"]) ?: return
+                    val delta = str(payload["delta"]) ?: ""
+                    appendStreaming(msgId, role = "reasoning", text = delta)
+                }
+            }
+            "session.reasoning.started" -> {
+                if (str(payload["sessionID"]) == sessionId) {
+                    val msgId = str(payload["assistantMessageID"])
+                    ensureStreamingEntry(msgId, role = "reasoning")
+                }
+            }
+            "session.text.delta" -> {
+                if (str(payload["sessionID"]) == sessionId) {
+                    val msgId = str(payload["assistantMessageID"]) ?: return
+                    val delta = str(payload["delta"]) ?: ""
+                    appendStreaming(msgId, role = "assistant", text = delta)
+                }
+            }
+            "session.text.started" -> {
+                if (str(payload["sessionID"]) == sessionId) {
+                    val msgId = str(payload["assistantMessageID"])
+                    ensureStreamingEntry(msgId, role = "assistant")
+                }
+            }
+            "session.tool.called", "session.tool.input.started" -> {
+                if (str(payload["sessionID"]) == sessionId) {
+                    handleToolEvent(payload)
+                }
+            }
+            "session.tool.success", "session.tool.error", "session.tool.output" -> {
+                if (str(payload["sessionID"]) == sessionId) {
+                    markToolDone(payload, failed = type != "session.tool.success")
+                }
+            }
+            "session.step.started" -> {
+                if (str(payload["sessionID"]) == sessionId) {
+                    _state.value = _state.value.copy(busy = true)
+                }
+            }
+            "session.step.ended", "session.execution.completed", "session.idle" -> {
+                if (str(payload["sessionID"]) == sessionId) {
+                    flushStreamingIntoHistory(sessionId)
+                    _state.value = _state.value.copy(busy = false)
+                    loadTodos()
+                }
+            }
+            // v1 events
             "message.updated" -> handleMessageDelta(sessionId)
             "message.part.updated" -> handleMessageDelta(sessionId)
             "session.status" -> {
@@ -291,6 +341,80 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+    }
+
+    // ---- live streaming buffer ------------------------------------------------
+
+    /** Streaming entries keyed by assistant message id; rendered above history. */
+    private val streaming = linkedMapOf<String, StreamEntry>()
+
+    data class StreamEntry(
+        val role: String,
+        var reasoning: StringBuilder,
+        var text: StringBuilder,
+        var toolName: String? = null,
+        var toolState: ToolStateDto? = null,
+    )
+
+    private fun publishStreaming() {
+        val history = _state.value.messages
+        val liveEntries = streaming.map { (id, e) ->
+            val body = when (e.role) {
+                "reasoning" -> e.reasoning.toString()
+                else -> e.text.toString()
+            }
+            ChatMessage(
+                id = "live-$id-${e.role}",
+                role = e.role,
+                text = body,
+                activity = listOfNotNull(e.toolState),
+                toolName = e.toolName,
+                streaming = true,
+                time = Long.MAX_VALUE,
+            )
+        }
+        _state.value = _state.value.copy(messages = history + liveEntries)
+    }
+
+    private fun ensureStreaming(msgId: String, role: String): StreamEntry =
+        streaming.getOrPut(msgId) { StreamEntry(role = role, reasoning = StringBuilder(), text = StringBuilder()) }
+
+    private fun ensureStreamingEntry(msgId: String?, role: String) {
+        if (msgId.isNullOrBlank()) return
+        ensureStreaming(msgId, role)
+        publishStreaming()
+    }
+
+    private fun appendStreaming(msgId: String, role: String, text: String) {
+        if (text.isEmpty()) return
+        val entry = ensureStreaming(msgId, role)
+        if (role == "reasoning") entry.reasoning.append(text) else entry.text.append(text)
+        publishStreaming()
+    }
+
+    private fun handleToolEvent(payload: JsonObject) {
+        val msgId = str(payload["assistantMessageID"]) ?: str(payload["callID"]) ?: return
+        val toolName = str(payload["tool"]) ?: str(payload["name"])
+        val entry = ensureStreaming(msgId, role = "assistant")
+        entry.toolName = toolName ?: entry.toolName
+        entry.toolState = ToolStateDto(status = "running")
+        publishStreaming()
+    }
+
+    private fun markToolDone(payload: JsonObject, failed: Boolean) {
+        val msgId = str(payload["assistantMessageID"]) ?: str(payload["callID"]) ?: return
+        streaming[msgId]?.let { entry ->
+            entry.toolName?.let {
+                entry.toolState = ToolStateDto(status = if (failed) "error" else "completed")
+            }
+        }
+        publishStreaming()
+    }
+
+    /** Replace the streamed tail with authoritative server history. */
+    private suspend fun flushStreamingIntoHistory(sessionId: String) {
+        streaming.clear()
+        handleMessageDelta(sessionId)
     }
 
     private suspend fun handleMessageDelta(sessionId: String) {
