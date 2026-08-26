@@ -9,6 +9,9 @@ export const createRequestSecurityRuntime = (deps) => {
   const packagedClientOrigins = new Set([
     'orbit-ui://app',
     'capacitor://localhost',
+    // Our Android shell serves over plain http (see capacitor.config.ts), so
+    // its WebView origin is http://localhost — upstream expected https.
+    'http://localhost',
     'https://localhost',
   ]);
 

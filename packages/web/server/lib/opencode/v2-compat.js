@@ -120,32 +120,146 @@ const translateSessionMessageToV1 = (entry) => {
   };
 };
 
-const V2_EVENT_TYPE_MAP = {
-  'session.execution.started': { type: 'session.status', properties: (data) => ({ status: 'busy' }) },
-  'session.execution.succeeded': { type: 'session.status', properties: () => ({ status: 'idle' }) },
-  'session.execution.failed': { type: 'session.status', properties: () => ({ status: 'idle' }) },
-  'server.connected': { type: 'server.connected', properties: (data) => data },
+const createV2EventTranslator = () => {
+  const turns = new Map();
+
+  const turnFor = (data) => {
+    const key = `${data.sessionID ?? ''}:${data.assistantMessageID ?? 'global'}`;
+    let turn = turns.get(key);
+    if (!turn) {
+      turn = { assistantMessageID: null, sessionID: null };
+      turns.set(key, turn);
+      if (turns.size > 64) {
+        turns.delete(turns.keys().next().value);
+      }
+    }
+    if (data.assistantMessageID) turn.assistantMessageID = data.assistantMessageID;
+    if (data.sessionID) turn.sessionID = data.sessionID;
+    return turn;
+  };
+
+  const emit = (id, type, properties) =>
+    `data: ${JSON.stringify({ id, type, properties })}`;
+
+  return (rawLine) => {
+    if (!rawLine.startsWith('data:')) return [rawLine];
+    const payload = rawLine.slice(5).trim();
+    if (!payload) return [rawLine];
+    let parsed;
+    try {
+      parsed = JSON.parse(payload);
+    } catch {
+      return [rawLine];
+    }
+
+    const data = parsed.data ?? {};
+    const eventId = parsed.id;
+    const out = [];
+
+    switch (parsed.type) {
+      case 'session.execution.started': {
+        out.push(emit(eventId, 'session.status', { ...(data.sessionID ? { sessionID: data.sessionID } : {}), status: { type: 'busy' }, ...data }));
+        break;
+      }
+      case 'session.execution.succeeded':
+      case 'session.execution.failed': {
+        out.push(emit(eventId, 'session.status', { ...(data.sessionID ? { sessionID: data.sessionID } : {}), status: { type: 'idle' }, ...data }));
+        break;
+      }
+      case 'session.step.started': {
+        turnFor(data);
+        out.push(emit(eventId, 'message.updated', {
+          info: {
+            id: data.assistantMessageID,
+            sessionID: data.sessionID,
+            role: 'assistant',
+            agent: data.agent ?? 'build',
+            model: data.model ?? null,
+            time: { created: Date.now() },
+          },
+        }));
+        break;
+      }
+      case 'session.step.ended': {
+        if (data.assistantMessageID) {
+          out.push(emit(eventId, 'message.updated', {
+            info: {
+              id: data.assistantMessageID,
+              sessionID: data.sessionID,
+              role: 'assistant',
+              finish: data.finish ?? 'stop',
+              cost: data.cost,
+              tokens: data.tokens,
+              time: { created: Date.now(), completed: Date.now() },
+            },
+          }));
+        }
+        break;
+      }
+      case 'session.text.started':
+      case 'session.reasoning.started': {
+        const turn = turnFor(data);
+        const kind = parsed.type === 'session.text.started' ? 'text' : 'reasoning';
+        const partID = `${turn.assistantMessageID}:${kind}:${data.ordinal ?? 0}`;
+        const part = {
+          id: partID,
+          messageID: turn.assistantMessageID,
+          sessionID: turn.sessionID,
+          type: kind,
+          text: '',
+          time: { start: Date.now() },
+        };
+        out.push(emit(eventId, 'message.part.updated', { part }));
+        break;
+      }
+      case 'session.text.delta':
+      case 'session.reasoning.delta': {
+        const turn = turnFor(data);
+        const kind = parsed.type === 'session.text.delta' ? 'text' : 'reasoning';
+        out.push(emit(eventId, 'message.part.delta', {
+          sessionID: data.sessionID,
+          messageID: data.assistantMessageID,
+          partID: `${turn.assistantMessageID}:${kind}:${data.ordinal ?? 0}`,
+          field: 'text',
+          delta: data.delta ?? '',
+        }));
+        break;
+      }
+      case 'session.text.ended':
+      case 'session.reasoning.ended': {
+        const turn = turnFor(data);
+        const kind = parsed.type === 'session.text.ended' ? 'text' : 'reasoning';
+        const partID = `${turn.assistantMessageID}:${kind}:${data.ordinal ?? 0}`;
+        out.push(emit(eventId, 'message.part.updated', {
+          part: {
+            id: partID,
+            messageID: turn.assistantMessageID,
+            sessionID: turn.sessionID,
+            type: kind,
+            text: typeof data.text === 'string' ? data.text : '',
+          },
+        }));
+        break;
+      }
+      default: {
+        // Unknown v2 types pass through in v1 envelope shape; the UI ignores
+        // types it does not handle.
+        out.push(emit(eventId, parsed.type, data));
+      }
+    }
+
+    return out;
+  };
 };
 
+let activeTranslator = null;
+
 const translateEventLine = (rawLine) => {
-  if (!rawLine.startsWith('data:')) return rawLine;
-  const payload = rawLine.slice(5).trim();
-  if (!payload) return rawLine;
-  let parsed;
-  try {
-    parsed = JSON.parse(payload);
-  } catch {
-    return rawLine;
+  if (!activeTranslator) {
+    activeTranslator = createV2EventTranslator();
   }
-  const mapped = V2_EVENT_TYPE_MAP[parsed.type];
-  if (!mapped) {
-    return `data: ${JSON.stringify({ id: parsed.id, type: parsed.type, properties: parsed.data ?? {} })}`;
-  }
-  return `data: ${JSON.stringify({
-    id: parsed.id,
-    type: mapped.type,
-    properties: { ...(mapped.properties(parsed.data ?? {}) ?? {}), ...(parsed.data ?? {}) },
-  })}`;
+  const lines = activeTranslator(rawLine);
+  return lines.join('\n');
 };
 
 export const isV2BackendMode = () => process.env.ORBIT_OPENCODE_V2 === '1';
@@ -288,15 +402,27 @@ export const registerV2CompatRoutes = (app, { resolveTargetBase, getAuthHeaders 
         const reader = upstream.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
+        const flushBlock = (block) => {
+          const lines = block
+            .split('\n')
+            .flatMap((line) => translateEventLine(line).split('\n'))
+            .filter((line, index, all) => !(line === '' && index === all.length - 1));
+          res.write(`${lines.join('\n')}\n\n`);
+        };
         const pump = async () => {
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() ?? '';
-            for (const line of lines) res.write(`${translateEventLine(line)}\n`);
+            buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+            let separatorIndex = buffer.indexOf('\n\n');
+            while (separatorIndex !== -1) {
+              const block = buffer.slice(0, separatorIndex);
+              buffer = buffer.slice(separatorIndex + 2);
+              if (block.trim()) flushBlock(block);
+              separatorIndex = buffer.indexOf('\n\n');
+            }
           }
+          if (buffer.trim()) flushBlock(buffer.trim());
           res.end();
         };
         pump().catch(() => res.end());
