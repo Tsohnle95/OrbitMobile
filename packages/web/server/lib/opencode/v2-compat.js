@@ -243,6 +243,28 @@ export const registerV2CompatRoutes = (app, { resolveTargetBase, getAuthHeaders 
         return sendJson(response.status, body ?? {});
       }
 
+      const promptAsyncMatch = legacyRoute.match(/^\/session\/([^/]+)\/prompt_async$/);
+      if (promptAsyncMatch && req.method === 'POST') {
+        const sessionId = promptAsyncMatch[1];
+        const parsed = typeof req.body === 'object' && req.body !== null ? req.body : {};
+        const parts = Array.isArray(parsed.parts) ? parsed.parts : [];
+        const text = parts
+          .filter((part) => part?.type === 'text')
+          .map((part) => part.text ?? '')
+          .join('\n')
+          .trim() || parsed.text || '';
+        const outbound = { text };
+        if (parsed.agent) outbound.agent = parsed.agent;
+        const query = directory ? `?directory=${encodeURIComponent(directory)}` : '';
+        const response = await fetch(`${targetBase}/api/session/${sessionId}/prompt${query}`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(outbound),
+        });
+        const body = await response.json().catch(() => null);
+        return sendJson(response.status, body ?? {});
+      }
+
       const messageListMatch = legacyRoute.match(/^\/session\/([^/]+)\/message$/);
       if (messageListMatch && req.method === 'GET') {
         const sessionId = messageListMatch[1];
@@ -283,15 +305,37 @@ export const registerV2CompatRoutes = (app, { resolveTargetBase, getAuthHeaders 
       }
 
       if (legacyRoute === '/experimental/session' && req.method === 'GET') {
-        const response = await fetch(`${targetBase}/api/session${url.search}`, { headers });
-        const body = await response.text();
-        res.status(response.status);
-        res.set('content-type', response.headers.get('content-type') ?? 'application/json');
-        return res.send(body);
+        // The beta scopes sessions by exact directory; the app may ask from a
+        // different working dir than the one a session was created under.
+        // Drop the filter so every session stays visible.
+        const allUrl = new URL(legacyPath, 'http://compat.local');
+        const response = await fetch(`${targetBase}/api/session`, { headers });
+        const body = await response.json().catch(() => null);
+        return sendJson(response.status, body ?? { data: [] });
       }
 
       if (legacyRoute === '/path' && req.method === 'GET') {
         return sendJson(200, { home: process.env.ORBIT_USER_HOME || '/Users/ty' });
+      }
+
+      if (legacyRoute === '/lsp' && req.method === 'GET') {
+        return sendJson(200, []);
+      }
+
+      if (legacyRoute === '/mcp' && req.method === 'GET') {
+        return sendJson(200, []);
+      }
+
+      if (legacyRoute === '/command' && req.method === 'GET') {
+        return sendJson(200, []);
+      }
+
+      if (legacyRoute === '/skill' && req.method === 'GET') {
+        return sendJson(200, []);
+      }
+
+      if (legacyRoute === '/global/upgrade' && req.method === 'GET') {
+        return sendJson(200, { available: false });
       }
 
       if (legacyRoute === '/lsp/status' && req.method === 'GET') {

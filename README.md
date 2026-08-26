@@ -49,6 +49,23 @@ ORBIT_OPENCODE_HEALTH_PATH=/api/health   # honored by every probe
 Without it the mobile app pairs but never flips to "connected" — the
 session bootstrap gates on `{"healthy":true}` from `/api/opencode/health`.
 
+### opencode2 (beta) backends
+
+Stable opencode 1.18.x needs nothing special. For an **opencode2 beta**
+backend (new `/api/*` surface, different payload shapes), enable the
+translation layer instead:
+
+```sh
+ORBIT_OPENCODE_V2=1            # mount the v1↔v2 compat proxy
+ORBIT_USER_HOME=/Users/ty      # home reported to the app's path API
+```
+
+The layer maps every SDK route the app uses (health, providers/model
+catalog, agents, sessions, `prompt_async` sends, event stream) onto the
+beta endpoints and synthesizes a model catalog from the backend's own
+most-recent session default. Known gaps: live in-chat streaming deltas are
+not yet translated — reopen a session to refresh its transcript.
+
 ## Build
 
 Requires bun 1.3+, Node 22+, JDK 21 (`/opt/homebrew/opt/openjdk@21`), and the
