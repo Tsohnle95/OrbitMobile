@@ -36,6 +36,7 @@ import {
 } from './lib/tunnels/types.js';
 import { prepareNotificationLastMessage } from './lib/notifications/index.js';
 import { registerTtsRoutes } from './lib/tts/routes.js';
+import { isV2BackendMode, registerV2CompatRoutes } from './lib/opencode/v2-compat.js';
 import { detectSayTtsCapability } from './lib/tts/capability-runtime.js';
 import { createTerminalRuntime } from './lib/terminal/runtime.js';
 import { createDictationRuntime } from './lib/dictation/runtime.js';
@@ -1616,6 +1617,23 @@ async function main(options = {}) {
 
   const app = express();
   const serverStartedAt = new Date().toISOString();
+
+  if (isV2BackendMode()) {
+    const compatPort = port === 0 ? 3011 : port;
+    openCodeNetworkState.compatSelfBase = `http://127.0.0.1:${compatPort}/internal/oc2`;
+    app.use(
+      '/internal/oc2',
+      registerV2CompatRoutes(app, {
+        resolveTargetBase: () => {
+          const configured = process.env.OPENCODE_HOST?.trim().replace(/\/+$/, '');
+          return configured || openCodeBaseUrl || `http://127.0.0.1:${openCodePort}`;
+        },
+        getAuthHeaders: getOpenCodeAuthHeaders,
+      }),
+    );
+    console.log('[v2-compat] opencode v2 translation layer enabled');
+  }
+
   const packagedClientOrigins = new Set([
     'orbit-ui://app',
     'capacitor://localhost',

@@ -84,6 +84,10 @@ export const createOpenCodeNetworkRuntime = (deps) => {
   };
 
   const buildOpenCodeUrl = (path, prefixOverride) => {
+    if (state.compatSelfBase) {
+      const compatPath = path.startsWith('/') ? path : `/${path}`;
+      return `${state.compatSelfBase}${compatPath}`;
+    }
     if (!state.openCodePort) {
       throw new Error('OpenCode port is not available');
     }
