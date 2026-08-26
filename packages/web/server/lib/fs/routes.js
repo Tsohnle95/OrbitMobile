@@ -601,7 +601,7 @@ export const registerFsRoutes = (app, dependencies) => {
 
   app.get('/api/fs/home', (_req, res) => {
     try {
-      const home = os.homedir();
+      const home = process.env.ORBIT_USER_HOME || os.homedir();
       if (!home || typeof home !== 'string' || home.length === 0) {
         return res.status(500).json({ error: 'Failed to resolve home directory' });
       }

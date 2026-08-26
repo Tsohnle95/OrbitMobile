@@ -514,11 +514,30 @@ export const registerV2CompatRoutes = (app, { resolveTargetBase, getAuthHeaders 
       if (legacyRoute === '/experimental/session' && req.method === 'GET') {
         // The beta scopes sessions by exact directory; the app may ask from a
         // different working dir than the one a session was created under.
-        // Drop the filter so every session stays visible.
-        const allUrl = new URL(legacyPath, 'http://compat.local');
+        // Drop the filter so every session stays visible. The SDK expects a
+        // bare array; honor limit/cursor so client paging terminates.
         const response = await fetch(`${targetBase}/api/session`, { headers });
         const body = await response.json().catch(() => null);
-        return sendJson(response.status, body ?? { data: [] });
+        let sessions = Array.isArray(body?.data) ? body.data : [];
+        sessions.sort((a, b) => ((b.time?.created ?? 0) || 0) - ((a.time?.created ?? 0) || 0));
+        const cursorValue = Number(url.searchParams.get('cursor'));
+        if (url.searchParams.get('cursor') && Number.isFinite(cursorValue)) {
+          sessions = sessions.filter((session) => ((session.time?.updated ?? 0) || 0) < cursorValue);
+        }
+        const limit = Number(url.searchParams.get('limit'));
+        if (Number.isFinite(limit) && limit > 0) {
+          sessions = sessions.slice(0, limit);
+        }
+        return sendJson(200, sessions);
+      }
+
+      if (legacyRoute === '/global/config' && req.method === 'GET') {
+        const modelRef = await resolveDefaultModel(targetBase, authHeaders);
+        return sendJson(200, { model: modelRef, default_agent: 'build', default_agent_name: 'build' });
+      }
+
+      if (legacyRoute === '/question' && req.method === 'GET') {
+        return sendJson(200, []);
       }
 
       if (legacyRoute === '/path' && req.method === 'GET') {
