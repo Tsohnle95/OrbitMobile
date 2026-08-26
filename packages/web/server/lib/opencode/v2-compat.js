@@ -241,6 +241,87 @@ const createV2EventTranslator = () => {
         }));
         break;
       }
+      case 'session.tool.input.started': {
+        const turn = turnFor(data);
+        if (!turn.tools) turn.tools = {};
+        const part = {
+          id: data.id,
+          callID: data.id,
+          tool: data.name ?? 'tool',
+          type: 'tool',
+          messageID: data.assistantMessageID,
+          sessionID: data.sessionID,
+          state: { status: 'pending', input: {}, metadata: {}, time: { start: Date.now() } },
+        };
+        turn.tools[data.id] = part;
+        out.push(emit(eventId, 'message.part.updated', { part }));
+        break;
+      }
+      case 'session.tool.input.ended': {
+        const turn = turnFor(data);
+        const stored = turn.tools?.[data.id];
+        let input = {};
+        try {
+          input = typeof data.text === 'string' ? JSON.parse(data.text) : (data.text ?? {});
+        } catch {
+          input = { raw: data.text };
+        }
+        if (stored) {
+          stored.state.input = input;
+          out.push(emit(eventId, 'message.part.updated', { part: { ...stored } }));
+        }
+        break;
+      }
+      case 'session.tool.called': {
+        const turn = turnFor(data);
+        const stored = turn.tools?.[data.id];
+        if (stored) {
+          stored.state = { ...stored.state, status: 'running', input: data.input ?? stored.state.input };
+          out.push(emit(eventId, 'message.part.updated', { part: { ...stored } }));
+        }
+        break;
+      }
+      case 'session.tool.progress': {
+        const turn = turnFor(data);
+        const stored = turn.tools?.[data.id];
+        if (stored) {
+          stored.state.metadata = { ...(stored.state.metadata ?? {}), ...(data.metadata ?? {}) };
+          out.push(emit(eventId, 'message.part.updated', { part: { ...stored } }));
+        }
+        break;
+      }
+      case 'session.tool.success': {
+        const turn = turnFor(data);
+        const stored = turn.tools?.[data.id];
+        if (stored) {
+          const outputText = Array.isArray(data.content)
+            ? data.content.filter((piece) => piece?.type === 'text').map((piece) => piece.text ?? '').join('')
+            : '';
+          stored.state = {
+            ...stored.state,
+            status: 'completed',
+            output: outputText,
+            time: { ...stored.state.time, end: Date.now() },
+          };
+          out.push(emit(eventId, 'message.part.updated', { part: { ...stored } }));
+        }
+        break;
+      }
+      case 'session.tool.failed':
+      case 'session.tool.error': {
+        const turn = turnFor(data);
+        const stored = turn.tools?.[data.id];
+        if (stored) {
+          stored.state = {
+            ...stored.state,
+            status: 'error',
+            error: typeof data.error === 'string' ? data.error : 'tool failed',
+            time: { ...stored.state.time, end: Date.now() },
+          };
+          out.push(emit(eventId, 'message.part.updated', { part: { ...stored } }));
+        }
+        break;
+      }
       default: {
         // Unknown v2 types pass through in v1 envelope shape; the UI ignores
         // types it does not handle.
