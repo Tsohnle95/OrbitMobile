@@ -63,8 +63,20 @@ ORBIT_USER_HOME=/Users/ty      # home reported to the app's path API
 The layer maps every SDK route the app uses (health, providers/model
 catalog, agents, sessions, `prompt_async` sends, event stream) onto the
 beta endpoints and synthesizes a model catalog from the backend's own
-most-recent session default. Known gaps: live in-chat streaming deltas are
-not yet translated — reopen a session to refresh its transcript.
+most-recent session default. Live streaming (text deltas, reasoning,
+tool lifecycle, status transitions) is fully translated.
+
+### Auditing the stack
+
+With the server running, verify every layer the app depends on:
+
+```sh
+ORBIT_URL=http://127.0.0.1:3011 ORBIT_PASSWORD=… node scripts/e2e-audit.mjs
+```
+
+It authenticates, exercises each SDK surface, sends a real prompt over the
+app's send path, and asserts the full live event sequence. Exit code 2 lists
+failing layers.
 
 ## Build
 
