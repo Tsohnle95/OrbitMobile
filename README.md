@@ -167,38 +167,42 @@ Known limitation: letting the mobile server **manage** its own v2 backend
 a not-yet-populated port and builds `http://127.0.0.1:null/api/health`. Use the
 external-backend form above until that is fixed.
 
-### Reach it from anywhere (Tailscale) — persistent macOS service
+### Reach it from anywhere (Tailscale) — manual start/stop
 
-This is the intended setup: both processes run at login under `launchd`, bound
-to `0.0.0.0`, and the phone connects over Tailscale from any network.
+The phone connects to the Mac's Tailscale address. Nothing runs until you start
+it, and you decide when it stops — no always-on service.
 
 ```sh
-tailscale up                       # once, on the Mac; install + log in on the phone too
-node scripts/install-service.mjs install
+tailscale up            # once, on the Mac; install + log in on the phone too
+bun run server:start    # start opencode2 + Orbit server in the background
+bun run server:stop     # stop both
+bun run server:status   # show pids + the tailnet URL
+bun run server:restart
 ```
 
-That installs two launchd agents (edit the constants at the top of the script —
-ports, password, data dir):
+Double-click **`Orbit Mobile.command`** in the repo root to toggle start/stop
+(start if stopped, stop if running).
 
-| Service | What | Endpoint |
+`start` launches both processes detached, writes pid files under
+`~/Library/Application Support/OrbitMobile/run/`, waits until healthy, and
+prints the tailnet URL and password. `stop` shuts both down and frees the ports.
+
+| Process | What | Endpoint |
 |---|---|---|
-| `com.orbitmobile.opencode2` | v2 backend, isolated `XDG_DATA_HOME` | `127.0.0.1:4099` |
-| `com.orbitmobile.server` | Orbit server, v2 compat, external backend | `0.0.0.0:3011` |
+| `opencode2` | v2 backend, isolated `XDG_DATA_HOME` | `127.0.0.1:4099` |
+| Orbit server | v2 compat, external backend | `0.0.0.0:3011` |
 
-Then in the app, add the Mac's Tailscale address as an instance —
+In the app, add the Mac's Tailscale address as an instance —
 `http://100.x.y.z:3011` or `http://<machine>.<tailnet>.ts.net:3011` — and unlock
-with `ORBIT_UI_PASSWORD`. It reconnects automatically on launch.
+with the UI password. It reconnects automatically once the server is running.
 
 ```sh
-# logs / control
 tail -f "~/Library/Application Support/OrbitMobile/logs/server.log"
-launchctl list | grep orbitmobile
-node scripts/install-service.mjs uninstall
 ```
 
 The backend is deliberately isolated from the desktop Orbit app's opencode data
 (`XDG_DATA_HOME=~/Library/Application Support/OrbitMobile/data`) so the two
-don't collide. Because the service binds `0.0.0.0`, `ORBIT_UI_PASSWORD` is what
+don't collide. Because the server binds `0.0.0.0`, `ORBIT_UI_PASSWORD` is what
 gates access — keep it set, and keep the tailnet private.
 
 Notes:
