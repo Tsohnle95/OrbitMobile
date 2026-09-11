@@ -88,8 +88,9 @@ const synthesizeProviderSnapshot = async (targetBase, authHeaders) => {
   ];
 };
 
-const translateSessionMessageToV1 = (entry) => {
+const translateSessionMessageToV1 = (entry, parentID) => {
   if (!entry || typeof entry !== 'object') return entry;
+  const messageID = entry.id;
   if (entry.type === 'user' || entry.role === 'user') {
     return {
       info: {
@@ -98,30 +99,65 @@ const translateSessionMessageToV1 = (entry) => {
         role: 'user',
         time: entry.time ?? {},
       },
-      parts: [{ type: 'text', text: entry.text ?? '' }],
+      parts: [{
+        id: `${messageID}:text:0`,
+        messageID,
+        sessionID: entry.sessionID,
+        type: 'text',
+        text: entry.text ?? '',
+      }],
     };
   }
   const content = Array.isArray(entry.content) ? entry.content : [];
-  const text = content
-    .filter((piece) => piece?.type === 'text')
-    .map((piece) => piece.text ?? '')
-    .join('');
+  const parts = [];
+  content.forEach((piece, index) => {
+    const kind = piece?.type === 'reasoning' ? 'reasoning' : piece?.type === 'tool' ? 'tool' : 'text';
+    const text = piece?.text ?? '';
+    // Skip empty reasoning placeholders; they add nothing and can confuse the
+    // UI's part grouping.
+    if (kind === 'reasoning' && !text) return;
+    parts.push({
+      id: `${messageID}:${kind}:${index}`,
+      messageID,
+      sessionID: entry.sessionID,
+      type: kind,
+      ...(kind === 'text' || kind === 'reasoning' ? { text, time: piece?.time } : {}),
+      ...(kind === 'tool' ? { tool: piece?.tool, state: piece?.state } : {}),
+    });
+  });
+  // The UI drops parts without an id, so always emit at least one identified
+  // part even for an empty assistant message — otherwise the whole transcript
+  // renders blank.
+  if (parts.length === 0) {
+    parts.push({ id: `${messageID}:text:0`, messageID, sessionID: entry.sessionID, type: 'text', text: '' });
+  }
   return {
     info: {
       id: entry.id,
       sessionID: entry.sessionID,
       role: 'assistant',
+      // The UI groups assistant messages into turns by parentID (the user
+      // message that triggered them). v1 provides it; derive it from the
+      // preceding user message when the v2 payload omits it.
+      parentID: entry.parentID ?? parentID,
       agent: entry.agent,
+      mode: entry.mode ?? 'build',
+      // v1 exposes the model as top-level modelID/providerID; the UI reads those.
+      modelID: entry.model?.id,
+      providerID: entry.model?.providerID,
       model: entry.model,
+      cost: entry.cost,
+      tokens: entry.tokens,
       time: entry.time ?? {},
       finish: entry.finish,
     },
-    parts: [{ type: 'text', text }],
+    parts,
   };
 };
 
 const createV2EventTranslator = () => {
   const turns = new Map();
+  const lastUserMessageBySession = new Map();
 
   const turnFor = (data) => {
     const key = `${data.sessionID ?? ''}:${data.assistantMessageID ?? 'global'}`;
@@ -157,6 +193,15 @@ const createV2EventTranslator = () => {
     const out = [];
 
     switch (parsed.type) {
+      case 'session.inbox.enqueued': {
+        // Remember the pending user message so assistant messages emitted by
+        // later step events can carry the parentID the UI groups turns by.
+        if (data.sessionID && data.inboxID) {
+          lastUserMessageBySession.set(data.sessionID, data.inboxID);
+        }
+        out.push(emit(eventId, parsed.type, data));
+        break;
+      }
       case 'session.execution.started': {
         out.push(emit(eventId, 'session.status', { ...(data.sessionID ? { sessionID: data.sessionID } : {}), status: { type: 'busy' }, ...data }));
         break;
@@ -173,6 +218,7 @@ const createV2EventTranslator = () => {
             id: data.assistantMessageID,
             sessionID: data.sessionID,
             role: 'assistant',
+            parentID: lastUserMessageBySession.get(data.sessionID),
             agent: data.agent ?? 'build',
             model: data.model ?? null,
             time: { created: Date.now() },
@@ -187,6 +233,7 @@ const createV2EventTranslator = () => {
               id: data.assistantMessageID,
               sessionID: data.sessionID,
               role: 'assistant',
+              parentID: lastUserMessageBySession.get(data.sessionID),
               finish: data.finish ?? 'stop',
               cost: data.cost,
               tokens: data.tokens,
@@ -467,8 +514,18 @@ export const registerV2CompatRoutes = (app, { resolveTargetBase, getAuthHeaders 
         const response = await fetch(`${targetBase}/api/session/${sessionId}/message${query}`, { headers });
         const body = await response.json().catch(() => null);
         const entries = unwrapData(body) ?? [];
-        const translated = Array.isArray(entries) ? entries.map(translateSessionMessageToV1) : [];
-        return sendJson(response.status, translated.reverse());
+        // v2 returns newest-first; v1 expects chronological order. Derive each
+        // assistant message's parentID from the preceding user message so the
+        // UI can group turns.
+        const chronological = Array.isArray(entries) ? entries.slice().reverse() : [];
+        const translated = [];
+        let lastUserId;
+        for (const entry of chronological) {
+          const isUser = entry?.type === 'user' || entry?.role === 'user';
+          translated.push(translateSessionMessageToV1(entry, isUser ? undefined : lastUserId));
+          if (isUser) lastUserId = entry.id;
+        }
+        return sendJson(response.status, translated);
       }
 
       if (legacyRoute === '/event' || legacyRoute === '/global/event') {
