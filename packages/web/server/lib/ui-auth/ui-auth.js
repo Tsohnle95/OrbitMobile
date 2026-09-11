@@ -840,13 +840,15 @@ export const createUiAuth = ({
     await clearRateLimit(req);
 
     const trustDevice = isTrustedDeviceRequest(req.body?.trustDevice);
-    const ttlMs = resolveSessionTtlMs(trustDevice);
     await issueSession(req, res, { trustDevice });
     let clientTokenResult = null;
     if (req.body?.issueClientToken === true && typeof clientAuthController?.createClient === 'function') {
       clientTokenResult = await clientAuthController.createClient({
         fallbackLabel: req.body?.clientLabel,
-        expiresAt: new Date(Date.now() + ttlMs).toISOString(),
+        // Device client tokens do not time-expire: they are invalidated only by
+        // explicit revocation or an app reinstall (which loses the stored
+        // token). The 7-day value applies to the browser session cookie only.
+        expiresAt: null,
         clientKind: req.body?.clientKind,
         dedupeKey: req.body?.dedupeKey,
         authMethod: 'password',
@@ -908,13 +910,15 @@ export const createUiAuth = ({
     try {
       await passkeyController.finishAuthentication(req.body);
       const trustDevice = isTrustedDeviceRequest(req.body?.trustDevice);
-      const ttlMs = resolveSessionTtlMs(trustDevice);
       await issueSession(req, res, { trustDevice });
       let clientTokenResult = null;
       if (req.body?.issueClientToken === true && typeof clientAuthController?.createClient === 'function') {
         clientTokenResult = await clientAuthController.createClient({
           fallbackLabel: req.body?.clientLabel,
-          expiresAt: new Date(Date.now() + ttlMs).toISOString(),
+          // Device client tokens do not time-expire: they are invalidated only by
+        // explicit revocation or an app reinstall (which loses the stored
+        // token). The 7-day value applies to the browser session cookie only.
+        expiresAt: null,
           clientKind: req.body?.clientKind,
           dedupeKey: req.body?.dedupeKey,
           authMethod: 'passkey',
