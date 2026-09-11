@@ -167,25 +167,21 @@ Known limitation: letting the mobile server **manage** its own v2 backend
 a not-yet-populated port and builds `http://127.0.0.1:null/api/health`. Use the
 external-backend form above until that is fixed.
 
-### Reach it from anywhere (Tailscale) — manual start/stop
+### Reach it from anywhere (Tailscale) — follows the Orbit desktop app
 
-The phone connects to the Mac's Tailscale address. Nothing runs until you start
-it, and you decide when it stops — no always-on service.
+The phone connects to the Mac's Tailscale address only while the **Orbit desktop
+app is open**. Orbit runs the mobile server (opencode2 + Orbit web server) for as
+long as the app is running and stops it when you quit — so "desktop app open =
+mobile works, desktop app closed = it can't connect".
 
 ```sh
 tailscale up            # once, on the Mac; install + log in on the phone too
-bun run server:start    # start opencode2 + Orbit server in the background
-bun run server:stop     # stop both
-bun run server:status   # show pids + the tailnet URL
-bun run server:restart
+# then just open Orbit.app
 ```
 
-Double-click **`Orbit Mobile.command`** in the repo root to toggle start/stop
-(start if stopped, stop if running).
-
-`start` launches both processes detached, writes pid files under
-`~/Library/Application Support/OrbitMobile/run/`, waits until healthy, and
-prints the tailnet URL and password. `stop` shuts both down and frees the ports.
+The desktop app spawns `scripts/desktop-service.mjs`, which watches the app's
+process id and tears the whole stack down if the app exits or crashes. Nothing
+runs while the app is closed.
 
 | Process | What | Endpoint |
 |---|---|---|
@@ -194,7 +190,20 @@ prints the tailnet URL and password. `stop` shuts both down and frees the ports.
 
 In the app, add the Mac's Tailscale address as an instance —
 `http://100.x.y.z:3011` or `http://<machine>.<tailnet>.ts.net:3011` — and unlock
-with the UI password. It reconnects automatically once the server is running.
+with the UI password. It reconnects automatically once Orbit is open.
+
+#### Without the desktop app (manual)
+
+If you want the stack up without opening Orbit, run it yourself:
+
+```sh
+bun run server:start    # start opencode2 + Orbit server in the background
+bun run server:stop     # stop both
+bun run server:status   # show pids + the tailnet URL
+bun run server:restart
+```
+
+Double-click **`Orbit Mobile.command`** in the repo root to toggle start/stop.
 
 ```sh
 tail -f "~/Library/Application Support/OrbitMobile/logs/server.log"
