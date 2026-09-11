@@ -1070,17 +1070,51 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
       for (const worktree of node.project.worktrees) ensureBucket(node, worktree.path, worktree);
     }
 
+    const unmatchedByDirectory = new Map<string, Session[]>();
     for (const session of sessions) {
       const directory = getSessionDirectory(session);
       if (!directory) continue;
       const normalizedDirectory = normalizePath(directory);
       const node = nodes.find((entry) => projectMatchesExactDirectory(entry.project, normalizedDirectory));
-      if (!node) continue;
+      if (!node) {
+        // Sessions in directories not registered as a project (e.g. server-side
+        // workspaces the app hasn't imported) must still be reachable, so group
+        // them under a fallback rather than dropping them.
+        const list = unmatchedByDirectory.get(normalizedDirectory) ?? [];
+        list.push(session);
+        unmatchedByDirectory.set(normalizedDirectory, list);
+        continue;
+      }
       const matchedWorktree = findExactWorktreeMatch(node.project, normalizedDirectory);
       const bucket = matchedWorktree
         ? ensureBucket(node, matchedWorktree.path, matchedWorktree)
         : ensureBucket(node, node.project.path, null);
       bucket.sessions.push(session);
+    }
+
+    if (unmatchedByDirectory.size > 0) {
+      const fallback: ProjectNode = {
+        project: {
+          id: '__orbit_all_sessions__',
+          label: 'All sessions',
+          path: '',
+          isGitRepo: false,
+          worktrees: [],
+        },
+        buckets: [],
+        totalSessions: 0,
+        isActive: false,
+      };
+      for (const [directory, list] of unmatchedByDirectory) {
+        fallback.buckets.push({
+          key: directory || '__root__',
+          label: getProjectLabel(directory) || 'Sessions',
+          path: directory,
+          worktree: null,
+          sessions: list,
+        });
+      }
+      nodes.push(fallback);
     }
 
     for (const node of nodes) {
