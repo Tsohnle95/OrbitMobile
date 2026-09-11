@@ -175,10 +175,51 @@ ${desktopReturn ? `<a class="return" href="orbit://focus/mcp-auth">Return to Orb
     }
   };
 
+  const readBackendProjectDirectories = async () => {
+    try {
+      const response = await fetch(buildOpenCodeUrl('/project', ''), {
+        headers: { accept: 'application/json', ...getOpenCodeAuthHeaders() },
+      });
+      const body = await response.json().catch(() => null);
+      const list = Array.isArray(body?.data) ? body.data : (Array.isArray(body) ? body : []);
+      return list
+        .map((project) => (typeof project?.canonical === 'string' ? project.canonical : null))
+        .filter(Boolean);
+    } catch {
+      return [];
+    }
+  };
+
+  // The shared OpenCode backend knows the real project directories. Mirror them
+  // into the served settings so the mobile app lists every project — and
+  // therefore every session — the desktop app has, instead of only the ones
+  // registered locally on the phone.
+  const mergeProjectDirectories = (settings, directories) => {
+    if (!Array.isArray(directories) || directories.length === 0) return settings;
+    const existing = Array.isArray(settings?.projects) ? settings.projects : [];
+    const byPath = new Map(existing.map((project) => [project.path, project]));
+    const now = Date.now();
+    let changed = false;
+    for (const directory of directories) {
+      if (!directory || byPath.has(directory)) continue;
+      byPath.set(directory, {
+        id: createProjectIdFromPath(directory),
+        path: directory,
+        label: path.basename(directory) || directory,
+        addedAt: now,
+        lastOpenedAt: now,
+      });
+      changed = true;
+    }
+    if (!changed) return settings;
+    return { ...settings, projects: [...byPath.values()] };
+  };
+
   app.get('/api/config/settings', async (_req, res) => {
     try {
       const settings = await readSettingsFromDiskMigrated();
-      res.json(formatSettingsResponse(settings));
+      const directories = await readBackendProjectDirectories();
+      res.json(formatSettingsResponse(mergeProjectDirectories(settings, directories)));
     } catch (error) {
       console.error('Failed to read settings:', error);
       res.status(500).json({ error: 'Failed to read settings' });

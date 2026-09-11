@@ -53,6 +53,54 @@ const unwrapData = (body) => {
   return body;
 };
 
+// v2 session list items omit the working directory, but the Orbit UI groups,
+// resolves, and opens sessions by directory (sessions without one are dropped
+// from directory maps). Project ids map to canonical paths via /api/project.
+const projectDirectoryCache = { at: 0, map: new Map() };
+
+const fetchProjectDirectories = async (targetBase, authHeaders) => {
+  if (projectDirectoryCache.map.size > 0 && Date.now() - projectDirectoryCache.at < 10_000) {
+    return projectDirectoryCache.map;
+  }
+  const map = new Map();
+  try {
+    const response = await fetch(`${targetBase}/api/project`, {
+      headers: { accept: 'application/json', ...authHeaders },
+    });
+    const body = await response.json().catch(() => null);
+    const list = Array.isArray(body?.data) ? body.data : (Array.isArray(body) ? body : []);
+    for (const project of list) {
+      const canonical = typeof project?.canonical === 'string' ? project.canonical : null;
+      if (project?.id && canonical) map.set(project.id, canonical);
+    }
+    projectDirectoryCache.at = Date.now();
+    projectDirectoryCache.map = map;
+  } catch {
+    // Keep whatever directories the sessions already carry.
+  }
+  return map;
+};
+
+const withSessionDirectory = (sessions, projectDirectories) => {
+  if (!Array.isArray(sessions)) return sessions;
+  return sessions.map((session) => {
+    if (!session || typeof session !== 'object') return session;
+    const worktree = typeof session.project?.worktree === 'string' ? session.project.worktree : null;
+    const existing = typeof session.directory === 'string' && session.directory ? session.directory : null;
+    const directory = existing ?? worktree ?? projectDirectories.get(session.projectID) ?? null;
+    if (!directory) return session;
+    return {
+      ...session,
+      directory,
+      project: {
+        ...(session.project ?? {}),
+        id: session.project?.id ?? session.projectID,
+        worktree: session.project?.worktree ?? directory,
+      },
+    };
+  });
+};
+
 const synthesizeProviderSnapshot = async (targetBase, authHeaders) => {
   const modelRef = await resolveDefaultModel(targetBase, authHeaders);
   const { providerID, id: modelId } = splitModelRef(modelRef);
@@ -568,6 +616,24 @@ export const registerV2CompatRoutes = (app, { resolveTargetBase, getAuthHeaders 
         return;
       }
 
+      if (legacyRoute === '/session' && req.method === 'GET') {
+        const response = await fetch(`${targetBase}/api/session${url.search}`, { headers });
+        const body = await response.json().catch(() => null);
+        const list = unwrapData(body);
+        if (!Array.isArray(list)) return sendJson(response.status, body ?? []);
+        return sendJson(200, withSessionDirectory(list, await fetchProjectDirectories(targetBase, authHeaders)));
+      }
+
+      const sessionDetailMatch = legacyRoute.match(/^\/session\/([^/]+)$/);
+      if (sessionDetailMatch && req.method === 'GET') {
+        const response = await fetch(`${targetBase}/api/session/${sessionDetailMatch[1]}${url.search}`, { headers });
+        const body = await response.json().catch(() => null);
+        const one = unwrapData(body);
+        if (!one || typeof one !== 'object' || Array.isArray(one)) return sendJson(response.status, body ?? {});
+        const [enriched] = withSessionDirectory([one], await fetchProjectDirectories(targetBase, authHeaders));
+        return sendJson(response.status, enriched);
+      }
+
       if (legacyRoute === '/experimental/session' && req.method === 'GET') {
         // The beta scopes sessions by exact directory; the app may ask from a
         // different working dir than the one a session was created under.
@@ -576,6 +642,7 @@ export const registerV2CompatRoutes = (app, { resolveTargetBase, getAuthHeaders 
         const response = await fetch(`${targetBase}/api/session`, { headers });
         const body = await response.json().catch(() => null);
         let sessions = Array.isArray(body?.data) ? body.data : [];
+        sessions = withSessionDirectory(sessions, await fetchProjectDirectories(targetBase, authHeaders));
         sessions.sort((a, b) => ((b.time?.created ?? 0) || 0) - ((a.time?.created ?? 0) || 0));
         const cursorValue = Number(url.searchParams.get('cursor'));
         if (url.searchParams.get('cursor') && Number.isFinite(cursorValue)) {
