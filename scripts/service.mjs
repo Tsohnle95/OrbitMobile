@@ -16,6 +16,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,7 +29,21 @@ const DATA_DIR = join(SUPPORT, 'data');
 
 const SERVER_PORT = Number(process.env.ORBIT_PORT || 3011);
 const BACKEND_PORT = Number(process.env.ORBIT_BACKEND_PORT || 4099);
-const PASSWORD = process.env.ORBIT_PASSWORD || 'orbit2026';
+const resolveUiPassword = () => {
+  const fromEnv = process.env.ORBIT_PASSWORD;
+  if (typeof fromEnv === 'string' && fromEnv.trim()) return fromEnv.trim();
+  const secretFile = join(SUPPORT, 'ui-password');
+  try {
+    const existing = readFileSync(secretFile, 'utf8').trim();
+    if (existing) return existing;
+  } catch {
+    // No persisted secret yet.
+  }
+  const generated = randomBytes(24).toString('base64url');
+  try { mkdirSync(SUPPORT, { recursive: true }); writeFileSync(secretFile, generated, { mode: 0o600 }); } catch {}
+  return generated;
+};
+const PASSWORD = resolveUiPassword();
 const START_TIMEOUT_MS = 60 * 1000;
 
 const OPENCODE2_BIN = join(homedir(), '.local', 'lib', 'node_modules', '@opencode-ai', 'cli', 'bin', 'opencode2.exe');
@@ -50,19 +65,43 @@ const readPid = (name) => {
 
 const isRunning = (name) => readPid(name) !== null;
 
-const killPort = (port) => {
-  const res = spawnSync('lsof', ['-ti', `tcp:${port}`, '-sTCP:LISTEN'], { encoding: 'utf8' });
-  const pids = (res.stdout || '').trim().split(/\s+/).filter(Boolean).filter((p) => Number(p) !== process.pid);
-  for (const pid of pids) { try { process.kill(Number(pid), 'SIGTERM'); } catch {} }
-  return pids.length;
+const isOrbitProcess = (pid) => {
+  try {
+    const res = spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' });
+    return /cli\.js serve|desktop-service\.mjs|opencode2|orbit-mobile/.test((res.stdout || '').trim());
+  } catch {
+    return false;
+  }
 };
 
-const waitForHealth = async (port, path, headers = {}) => {
+const killPort = (port) => {
+  const res = spawnSync('lsof', ['-ti', `tcp:${port}`, '-sTCP:LISTEN'], { encoding: 'utf8' });
+  const pids = (res.stdout || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(Number)
+    .filter((pid) => Number.isFinite(pid) && pid > 1 && pid !== process.pid);
+  let killed = 0;
+  for (const pid of pids) {
+    if (!isOrbitProcess(pid)) continue;
+    try { process.kill(pid, 'SIGTERM'); killed += 1; } catch {}
+  }
+  return killed;
+};
+
+const waitForHealth = async (port, path, headers = {}, validate) => {
   const deadline = Date.now() + START_TIMEOUT_MS;
   while (Date.now() < deadline) {
     try {
       const res = await fetch(`http://127.0.0.1:${port}${path}`, { headers, signal: AbortSignal.timeout(3000) });
-      if (res.ok) return true;
+      if (res.ok) {
+        const contentType = res.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          const body = await res.json().catch(() => null);
+          if (!validate || validate(body)) return true;
+        }
+      }
     } catch {}
     await sleep(400);
   }
@@ -91,7 +130,10 @@ const startOne = (name, command, args, env, logFile, errFile) => {
   child.unref();
   closeSync(outFd);
   closeSync(errFd);
-  writeFileSync(pidPath(name), String(child.pid));
+  child.on('error', (error) => log(`${name} spawn error: ${error.message}`));
+  if (Number.isFinite(child.pid) && child.pid > 1) {
+    writeFileSync(pidPath(name), String(child.pid));
+  }
   return child.pid;
 };
 
@@ -113,7 +155,7 @@ const startAction = async () => {
   }, 'opencode2.log', 'opencode2.err.log');
 
   const backendAuth = { authorization: `Basic ${Buffer.from(`opencode:${PASSWORD}`).toString('base64')}` };
-  if (!await waitForHealth(BACKEND_PORT, '/api/health', backendAuth)) {
+  if (!await waitForHealth(BACKEND_PORT, '/api/health', backendAuth, (body) => body?.healthy === true)) {
     log('backend failed to become healthy — see logs/opencode2.err.log');
     stopAction({ quiet: true });
     process.exitCode = 1;
@@ -130,7 +172,7 @@ const startAction = async () => {
     ORBIT_UI_PASSWORD: PASSWORD,
   }, 'server.log', 'server.err.log');
 
-  if (!await waitForHealth(SERVER_PORT, '/health')) {
+  if (!await waitForHealth(SERVER_PORT, '/health', {}, (body) => body?.status === 'ok' || typeof body?.openCodePort !== 'undefined')) {
     log('server failed to become healthy — see logs/server.err.log');
     stopAction({ quiet: true });
     process.exitCode = 1;

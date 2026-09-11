@@ -1,4 +1,5 @@
 import express from 'express';
+import os from 'node:os';
 
 const LOOPBACK_ADDRESSES = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 
@@ -62,8 +63,8 @@ const fetchProjectDirectories = async (targetBase, authHeaders) => {
   if (projectDirectoryCache.map.size > 0 && Date.now() - projectDirectoryCache.at < 10_000) {
     return projectDirectoryCache.map;
   }
-  const map = new Map();
   try {
+    const map = new Map();
     const response = await fetch(`${targetBase}/api/project`, {
       headers: { accept: 'application/json', ...authHeaders },
     });
@@ -75,10 +76,12 @@ const fetchProjectDirectories = async (targetBase, authHeaders) => {
     }
     projectDirectoryCache.at = Date.now();
     projectDirectoryCache.map = map;
+    return map;
   } catch {
-    // Keep whatever directories the sessions already carry.
+    // A transient failure must not strip directories from every session; reuse
+    // the last good map.
+    return projectDirectoryCache.map;
   }
-  return map;
 };
 
 const withSessionDirectory = (sessions, projectDirectories) => {
@@ -87,7 +90,12 @@ const withSessionDirectory = (sessions, projectDirectories) => {
     if (!session || typeof session !== 'object') return session;
     const worktree = typeof session.project?.worktree === 'string' ? session.project.worktree : null;
     const existing = typeof session.directory === 'string' && session.directory ? session.directory : null;
-    const directory = existing ?? worktree ?? projectDirectories.get(session.projectID) ?? null;
+    // `location.directory` is the authoritative cwd the backend reports; the
+    // project canonical is only a fallback (project-root sessions).
+    const locationDirectory = typeof session.location?.directory === 'string' && session.location.directory
+      ? session.location.directory
+      : null;
+    const directory = existing ?? locationDirectory ?? worktree ?? projectDirectories.get(session.projectID) ?? null;
     if (!directory) return session;
     return {
       ...session,
@@ -99,6 +107,24 @@ const withSessionDirectory = (sessions, projectDirectories) => {
       },
     };
   });
+};
+
+// Fetch up to a bounded number of session pages so the mobile list shows every
+// session, not just the backend's default first page.
+const fetchAllV2Sessions = async (targetBase, headers) => {
+  const all = [];
+  let cursor = null;
+  for (let page = 0; page < 12; page += 1) {
+    const params = new URLSearchParams({ limit: '200' });
+    if (cursor) params.set('cursor', cursor);
+    const response = await fetch(`${targetBase}/api/session?${params.toString()}`, { headers });
+    const body = await response.json().catch(() => null);
+    const list = Array.isArray(body?.data) ? body.data : (Array.isArray(body) ? body : []);
+    all.push(...list);
+    cursor = body?.cursor?.next;
+    if (!cursor || list.length === 0) break;
+  }
+  return all;
 };
 
 const synthesizeProviderSnapshot = async (targetBase, authHeaders) => {
@@ -136,6 +162,21 @@ const synthesizeProviderSnapshot = async (targetBase, authHeaders) => {
   ];
 };
 
+const mapToolStateToV1 = (state) => {
+  if (!state || typeof state !== 'object') return state;
+  const output = Array.isArray(state.content)
+    ? state.content.filter((piece) => piece?.type === 'text').map((piece) => piece.text ?? '').join('')
+    : (typeof state.output === 'string' ? state.output : undefined);
+  const error = state.error && typeof state.error === 'object'
+    ? (state.error.message ?? JSON.stringify(state.error))
+    : state.error;
+  return {
+    ...state,
+    ...(output !== undefined ? { output } : {}),
+    ...(error !== undefined ? { error } : {}),
+  };
+};
+
 const translateSessionMessageToV1 = (entry, parentID) => {
   if (!entry || typeof entry !== 'object') return entry;
   const messageID = entry.id;
@@ -170,7 +211,12 @@ const translateSessionMessageToV1 = (entry, parentID) => {
       sessionID: entry.sessionID,
       type: kind,
       ...(kind === 'text' || kind === 'reasoning' ? { text, time: piece?.time } : {}),
-      ...(kind === 'tool' ? { tool: piece?.tool, state: piece?.state } : {}),
+      ...(kind === 'tool' ? {
+        // v2 names the tool `name`; v1 parts expose it as `tool`.
+        tool: piece?.name ?? piece?.tool,
+        callID: piece?.id,
+        state: mapToolStateToV1(piece?.state),
+      } : {}),
     });
   });
   // The UI drops parts without an id, so always emit at least one identified
@@ -241,10 +287,39 @@ const createV2EventTranslator = () => {
     const out = [];
 
     switch (parsed.type) {
+      case 'session.created':
+      case 'session.renamed':
+      case 'session.moved':
+      case 'session.updated': {
+        // v2 emits session lifecycle events with flat fields (no `info`). Wrap
+        // them in the v1 `{info}` envelope the UI reducer expects, and carry
+        // `location.directory` so the session can be grouped.
+        const info = data.info && typeof data.info === 'object'
+          ? { ...data.info }
+          : {
+              id: data.sessionID ?? data.id,
+              sessionID: data.sessionID ?? data.id,
+              slug: data.slug,
+              title: data.title,
+              projectID: data.projectID,
+              parentID: data.parentID,
+              time: data.time ?? { created: Date.now(), updated: Date.now() },
+            };
+        if (!info.directory && data.location?.directory) info.directory = data.location.directory;
+        out.push(emit(eventId, parsed.type === 'session.created' ? 'session.created' : 'session.updated', { info }));
+        break;
+      }
+      case 'session.deleted': {
+        const sessionID = data.sessionID ?? data.id;
+        out.push(emit(eventId, 'session.deleted', { sessionID, info: { id: sessionID } }));
+        break;
+      }
       case 'session.inbox.enqueued': {
         // Remember the pending user message so assistant messages emitted by
         // later step events can carry the parentID the UI groups turns by.
-        if (data.sessionID && data.inboxID) {
+        // Only user items are message ids that can parent a turn.
+        const itemType = data.item?.type;
+        if (data.sessionID && data.inboxID && (itemType === undefined || itemType === 'user')) {
           lastUserMessageBySession.set(data.sessionID, data.inboxID);
         }
         out.push(emit(eventId, parsed.type, data));
@@ -255,8 +330,18 @@ const createV2EventTranslator = () => {
         break;
       }
       case 'session.execution.succeeded':
-      case 'session.execution.failed': {
+      case 'session.execution.failed':
+      case 'session.execution.interrupted': {
         out.push(emit(eventId, 'session.status', { ...(data.sessionID ? { sessionID: data.sessionID } : {}), status: { type: 'idle' }, ...data }));
+        break;
+      }
+      case 'session.step.failed': {
+        // A failed step must settle the session out of "busy" and surface the
+        // error; otherwise the turn stays pinned as working forever.
+        out.push(emit(eventId, 'session.error', {
+          ...(data.sessionID ? { sessionID: data.sessionID } : {}),
+          error: data.error,
+        }));
         break;
       }
       case 'session.step.started': {
@@ -410,7 +495,9 @@ const createV2EventTranslator = () => {
           stored.state = {
             ...stored.state,
             status: 'error',
-            error: typeof data.error === 'string' ? data.error : 'tool failed',
+            error: data.error && typeof data.error === 'object'
+              ? (data.error.message ?? JSON.stringify(data.error))
+              : (typeof data.error === 'string' ? data.error : 'tool failed'),
             time: { ...stored.state.time, end: Date.now() },
           };
           out.push(emit(eventId, 'message.part.updated', { part: { ...stored } }));
@@ -440,22 +527,33 @@ const translateEventLine = (rawLine) => {
 
 export const isV2BackendMode = () => process.env.ORBIT_OPENCODE_V2 === '1';
 
-export const registerV2CompatRoutes = (app, { resolveTargetBase, getAuthHeaders }) => {
+export const registerV2CompatRoutes = (app, { resolveTargetBase, getAuthHeaders, compatToken }) => {
   const router = express.Router();
-  router.use(express.json({ limit: '25mb', type: () => true }));
 
+  // This layer forwards arbitrary paths to the backend WITH backend credentials,
+  // so it must never be reachable by anything but the server's own internal
+  // calls. Peer address alone is not a boundary: cloudflared/ngrok tunnels
+  // connect from loopback and would pass it. Require the per-process secret the
+  // server embeds in its internal base URL.
   router.use((req, res, next) => {
     const remote = req.socket.remoteAddress || '';
     if (!LOOPBACK_ADDRESSES.has(remote)) {
       return res.status(403).json({ error: 'internal compatibility endpoint' });
     }
+    const requestPath = req.originalUrl.replace(/^\/internal\/oc2/, '').split('?')[0];
+    if (!compatToken || !requestPath.startsWith(`/${compatToken}`)) {
+      return res.status(403).json({ error: 'internal compatibility endpoint' });
+    }
     next();
   });
+
+  router.use(express.json({ limit: '25mb', type: () => true }));
 
   router.all('/*splat', async (req, res) => {
     const targetBase = resolveTargetBase();
     const authHeaders = getAuthHeaders();
-    const legacyPath = req.originalUrl.replace(/^\/internal\/oc2/, '') || '/';
+    const legacyPath = (req.originalUrl.replace(/^\/internal\/oc2/, '') || '/')
+      .replace(new RegExp(`^/${compatToken}`), '') || '/';
     const queryIndex = legacyPath.indexOf('?');
     const legacyRoute = queryIndex === -1 ? legacyPath : legacyPath.slice(0, queryIndex);
     const url = new URL(legacyPath, 'http://compat.local');
@@ -486,7 +584,10 @@ export const registerV2CompatRoutes = (app, { resolveTargetBase, getAuthHeaders 
 
       if ((legacyRoute === '/provider' || legacyRoute === '/config/providers') && req.method === 'GET') {
         const providers = await synthesizeProviderSnapshot(targetBase, authHeaders);
-        return sendJson(200, legacyPath === '/provider' ? providers : { providers });
+        if (legacyPath === '/provider') return sendJson(200, providers);
+        const modelRef = await resolveDefaultModel(targetBase, authHeaders);
+        const { providerID, id: modelId } = splitModelRef(modelRef);
+        return sendJson(200, { providers, default: { [providerID]: modelId } });
       }
 
       if (legacyRoute === '/model' && req.method === 'GET') {
@@ -512,10 +613,23 @@ export const registerV2CompatRoutes = (app, { resolveTargetBase, getAuthHeaders 
         return sendJson(response.status, unwrapData(body) ?? []);
       }
 
-      const sessionMatch = legacyRoute.match(/^\/session\/([^/]+)\/message$/);
-      if (sessionMatch && req.method === 'POST') {
-        const sessionId = sessionMatch[1];
-        const parsed = typeof req.body === 'object' && req.body !== null ? req.body : {};
+      const forwardSessionPrompt = async (sessionId, parsed) => {
+        // v2 ignores `model` in the prompt body — it must be selected on the
+        // session first. Apply it best-effort so the model picker takes effect.
+        const model = parsed.model;
+        const providerID = model?.providerID ?? model?.providerId;
+        const modelID = model?.modelID ?? model?.modelId ?? model?.id;
+        if (providerID && modelID) {
+          try {
+            await fetch(`${targetBase}/api/session/${sessionId}/model`, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({ model: { providerID, id: modelID } }),
+            });
+          } catch {
+            // Best-effort; still send the prompt.
+          }
+        }
         const parts = Array.isArray(parsed.parts) ? parsed.parts : [];
         const text = parts
           .filter((part) => part?.type === 'text')
@@ -523,34 +637,33 @@ export const registerV2CompatRoutes = (app, { resolveTargetBase, getAuthHeaders 
           .join('\n')
           .trim() || parsed.text || '';
         const outbound = { text };
+        // Preserve the client message id so optimistic user messages dedupe,
+        // and the delivery mode so "queue" does not preempt a running turn.
+        if (parsed.messageID) outbound.id = parsed.messageID;
+        if (parsed.delivery) outbound.delivery = parsed.delivery;
+        if (parsed.metadata) outbound.metadata = parsed.metadata;
+        if (Array.isArray(parsed.files)) outbound.files = parsed.files;
+        if (parsed.agent) outbound.agent = parsed.agent;
         const query = directory ? `?directory=${encodeURIComponent(directory)}` : '';
-        const response = await fetch(`${targetBase}/api/session/${sessionId}/prompt${query}`, {
+        return fetch(`${targetBase}/api/session/${sessionId}/prompt${query}`, {
           method: 'POST',
           headers,
           body: JSON.stringify(outbound),
         });
+      };
+
+      const sessionMatch = legacyRoute.match(/^\/session\/([^/]+)\/message$/);
+      if (sessionMatch && req.method === 'POST') {
+        const parsed = typeof req.body === 'object' && req.body !== null ? req.body : {};
+        const response = await forwardSessionPrompt(sessionMatch[1], parsed);
         const body = await response.json().catch(() => null);
         return sendJson(response.status, body ?? {});
       }
 
       const promptAsyncMatch = legacyRoute.match(/^\/session\/([^/]+)\/prompt_async$/);
       if (promptAsyncMatch && req.method === 'POST') {
-        const sessionId = promptAsyncMatch[1];
         const parsed = typeof req.body === 'object' && req.body !== null ? req.body : {};
-        const parts = Array.isArray(parsed.parts) ? parsed.parts : [];
-        const text = parts
-          .filter((part) => part?.type === 'text')
-          .map((part) => part.text ?? '')
-          .join('\n')
-          .trim() || parsed.text || '';
-        const outbound = { text };
-        if (parsed.agent) outbound.agent = parsed.agent;
-        const query = directory ? `?directory=${encodeURIComponent(directory)}` : '';
-        const response = await fetch(`${targetBase}/api/session/${sessionId}/prompt${query}`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(outbound),
-        });
+        const response = await forwardSessionPrompt(promptAsyncMatch[1], parsed);
         const body = await response.json().catch(() => null);
         return sendJson(response.status, body ?? {});
       }
@@ -558,10 +671,23 @@ export const registerV2CompatRoutes = (app, { resolveTargetBase, getAuthHeaders 
       const messageListMatch = legacyRoute.match(/^\/session\/([^/]+)\/message$/);
       if (messageListMatch && req.method === 'GET') {
         const sessionId = messageListMatch[1];
-        const query = directory ? `?directory=${encodeURIComponent(directory)}` : '';
-        const response = await fetch(`${targetBase}/api/session/${sessionId}/message${query}`, { headers });
-        const body = await response.json().catch(() => null);
+        // v1 paging: the client sends `limit` and an opaque `before` cursor and
+        // reads the next cursor from `x-next-cursor`. v2 paging: `limit` +
+        // `cursor` (order defaults to newest-first), exposing `cursor.next`.
+        const limit = Number(url.searchParams.get('limit'));
+        const before = url.searchParams.get('before');
+        const params = new URLSearchParams();
+        if (Number.isFinite(limit) && limit > 0) params.set('limit', String(Math.min(limit, 200)));
+        if (before) params.set('cursor', before);
+        if (directory) params.set('directory', directory);
+        const v2Response = await fetch(
+          `${targetBase}/api/session/${sessionId}/message${params.toString() ? `?${params.toString()}` : ''}`,
+          { headers },
+        );
+        const body = await v2Response.json().catch(() => null);
         const entries = unwrapData(body) ?? [];
+        const nextCursor = body?.cursor?.next;
+        if (typeof nextCursor === 'string' && nextCursor) res.set('x-next-cursor', nextCursor);
         // v2 returns newest-first; v1 expects chronological order. Derive each
         // assistant message's parentID from the preceding user message so the
         // UI can group turns.
@@ -573,17 +699,27 @@ export const registerV2CompatRoutes = (app, { resolveTargetBase, getAuthHeaders 
           translated.push(translateSessionMessageToV1(entry, isUser ? undefined : lastUserId));
           if (isUser) lastUserId = entry.id;
         }
-        return sendJson(response.status, translated);
+        return sendJson(v2Response.status, translated);
       }
 
       if (legacyRoute === '/event' || legacyRoute === '/global/event') {
+        // Fetch first: a failed/HTML upstream must surface as an error, not a
+        // 200 stream that immediately closes.
+        const upstreamHeaders = { ...authHeaders, accept: 'text/event-stream' };
+        if (req.headers['last-event-id']) upstreamHeaders['last-event-id'] = req.headers['last-event-id'];
+        let upstream;
+        try {
+          upstream = await fetch(`${targetBase}/api/event`, { headers: upstreamHeaders });
+        } catch (error) {
+          return sendJson(502, { error: `upstream event stream unavailable: ${error.message}` });
+        }
+        if (!upstream.ok || !upstream.body) {
+          return sendJson(upstream.status === 200 ? 502 : upstream.status, { error: 'upstream event stream unavailable' });
+        }
         res.writeHead(200, {
           'content-type': 'text/event-stream',
           'cache-control': 'no-cache',
           connection: 'keep-alive',
-        });
-        const upstream = await fetch(`${targetBase}/api/event`, {
-          headers: { ...authHeaders, accept: 'text/event-stream' },
         });
         const reader = upstream.body.getReader();
         const decoder = new TextDecoder();
@@ -593,7 +729,7 @@ export const registerV2CompatRoutes = (app, { resolveTargetBase, getAuthHeaders 
             .split('\n')
             .flatMap((line) => translateEventLine(line).split('\n'))
             .filter((line, index, all) => !(line === '' && index === all.length - 1));
-          res.write(`${lines.join('\n')}\n\n`);
+          return res.write(`${lines.join('\n')}\n\n`);
         };
         const pump = async () => {
           while (true) {
@@ -604,7 +740,10 @@ export const registerV2CompatRoutes = (app, { resolveTargetBase, getAuthHeaders 
             while (separatorIndex !== -1) {
               const block = buffer.slice(0, separatorIndex);
               buffer = buffer.slice(separatorIndex + 2);
-              if (block.trim()) flushBlock(block);
+              if (block.trim() && flushBlock(block) === false) {
+                // Backpressure: wait for the socket to drain before reading more.
+                await new Promise((resolve) => res.once('drain', resolve));
+              }
               separatorIndex = buffer.indexOf('\n\n');
             }
           }
@@ -617,10 +756,7 @@ export const registerV2CompatRoutes = (app, { resolveTargetBase, getAuthHeaders 
       }
 
       if (legacyRoute === '/session' && req.method === 'GET') {
-        const response = await fetch(`${targetBase}/api/session${url.search}`, { headers });
-        const body = await response.json().catch(() => null);
-        const list = unwrapData(body);
-        if (!Array.isArray(list)) return sendJson(response.status, body ?? []);
+        const list = await fetchAllV2Sessions(targetBase, headers);
         return sendJson(200, withSessionDirectory(list, await fetchProjectDirectories(targetBase, authHeaders)));
       }
 
@@ -639,11 +775,9 @@ export const registerV2CompatRoutes = (app, { resolveTargetBase, getAuthHeaders 
         // different working dir than the one a session was created under.
         // Drop the filter so every session stays visible. The SDK expects a
         // bare array; honor limit/cursor so client paging terminates.
-        const response = await fetch(`${targetBase}/api/session`, { headers });
-        const body = await response.json().catch(() => null);
-        let sessions = Array.isArray(body?.data) ? body.data : [];
+        let sessions = await fetchAllV2Sessions(targetBase, headers);
         sessions = withSessionDirectory(sessions, await fetchProjectDirectories(targetBase, authHeaders));
-        sessions.sort((a, b) => ((b.time?.created ?? 0) || 0) - ((a.time?.created ?? 0) || 0));
+        sessions.sort((a, b) => ((b.time?.updated ?? b.time?.created ?? 0) || 0) - ((a.time?.updated ?? a.time?.created ?? 0) || 0));
         const cursorValue = Number(url.searchParams.get('cursor'));
         if (url.searchParams.get('cursor') && Number.isFinite(cursorValue)) {
           sessions = sessions.filter((session) => ((session.time?.updated ?? 0) || 0) < cursorValue);
@@ -665,7 +799,7 @@ export const registerV2CompatRoutes = (app, { resolveTargetBase, getAuthHeaders 
       }
 
       if (legacyRoute === '/path' && req.method === 'GET') {
-        return sendJson(200, { home: process.env.ORBIT_USER_HOME || '/Users/ty' });
+        return sendJson(200, { home: process.env.ORBIT_USER_HOME || os.homedir() });
       }
 
       if (legacyRoute === '/lsp' && req.method === 'GET') {

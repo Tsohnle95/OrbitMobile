@@ -13,6 +13,7 @@ apply plugin: 'com.android.application'
 // ---------------------------------------------------------------------------
 def keystorePropsFile = [
     rootProject.file('keystore.properties'),
+    rootProject.file('../keystore.properties'),
     rootProject.file('../../keystore.properties'),
     rootProject.file('../../../keystore.properties'),
 ].find { it.exists() }
@@ -64,7 +65,29 @@ def gitCommitCount = {
     }
 }
 
-def resolvedVersionCode = (System.getenv('ORBIT_ANDROID_VERSION_CODE') ?: gitCommitCount().toString()).toInteger()
+def gitShallow = {
+    try {
+        def proc = ['git', 'rev-parse', '--is-shallow-repository'].execute(null, rootProject.projectDir)
+        proc.waitFor()
+        return proc.text.trim() == 'true'
+    } catch (Exception ignored) {
+        return false
+    }
+}
+
+def resolvedVersionCode = (() -> {
+    def override = System.getenv('ORBIT_ANDROID_VERSION_CODE')
+    if (override) return override.toInteger()
+    def count = gitCommitCount()
+    // A shallow clone (CI default fetch-depth: 1) reports 1 for every build,
+    // which would collide across releases. Fall back to a time-based, strictly
+    // increasing value; set ORBIT_ANDROID_VERSION_CODE for reproducible releases.
+    if (count <= 1 || gitShallow()) {
+        logger.lifecycle('versionCode: git history unavailable/shallow; using time-based value (override with ORBIT_ANDROID_VERSION_CODE)')
+        return (int) (System.currentTimeMillis() / 1000)
+    }
+    return count
+})()
 def resolvedVersionName = System.getenv('ORBIT_ANDROID_VERSION_NAME') ?: packageVersionName
 
 android {
@@ -148,9 +171,23 @@ try {
 
 // Surface the resolved identity on every build so it is obvious which artifact
 // was produced with which signing key.
-tasks.matching { it.name in ['assembleDebug', 'assembleRelease'] }.configureEach {
+tasks.matching { it.name in ['assembleDebug', 'assembleRelease', 'bundleRelease'] }.configureEach {
     doFirst {
         logger.lifecycle("[orbit-mobile] versionName=${resolvedVersionName} versionCode=${resolvedVersionCode} " +
             "signing=${hasReleaseSigning ? 'release-keystore' : (localDebugKeystore.exists() ? 'debug-keystore' : 'NONE')}")
+    }
+}
+
+// A release build with no signing config silently produces an *unsigned* APK,
+// which is easy to mistake for a shippable artifact. Fail loudly instead.
+tasks.matching { it.name in ['assembleRelease', 'bundleRelease'] }.configureEach {
+    doFirst {
+        if (!hasReleaseSigning) {
+            throw new GradleException(
+                'Release build requested but no signing credentials were found. ' +
+                'Set ORBIT_ANDROID_KEYSTORE_PATH/_KEYSTORE_PASSWORD/_KEY_ALIAS/_KEY_PASSWORD ' +
+                'or provide keystore.properties (see README).'
+            )
+        }
     }
 }

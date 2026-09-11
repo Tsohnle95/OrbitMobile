@@ -2262,16 +2262,23 @@ export function SyncProvider(props: {
         const batch = createDirectoryEventBatch()
         try {
           for (const payload of payloads) {
-            dispatchVSCodeRuntimeNotificationEvent(directory, payload)
-            if (payload.type === "installation.update-available") {
-              const version = typeof (payload.properties as { version?: unknown })?.version === "string"
-                ? (payload.properties as { version: string }).version
-                : ""
-              if (version) {
-                dispatchOpenCodeUpdateAvailable({ version })
+            // One malformed event must not abort the rest of the batch — the
+            // dropped events would never be re-delivered (the id is already
+            // acknowledged).
+            try {
+              dispatchVSCodeRuntimeNotificationEvent(directory, payload)
+              if (payload.type === "installation.update-available") {
+                const version = typeof (payload.properties as { version?: unknown })?.version === "string"
+                  ? (payload.properties as { version: string }).version
+                  : ""
+                if (version) {
+                  dispatchOpenCodeUpdateAvailable({ version })
+                }
               }
+              handleEvent(directory, payload, childStores, routingIndex, runtimeKey, false, currentDirectoryRef.current, batch)
+            } catch (error) {
+              console.warn("[orbit] event handler threw; continuing batch", payload?.type, error)
             }
-            handleEvent(directory, payload, childStores, routingIndex, runtimeKey, false, currentDirectoryRef.current, batch)
           }
         } finally {
           publishDirectoryEventBatch(batch)

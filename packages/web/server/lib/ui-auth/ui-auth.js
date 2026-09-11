@@ -23,16 +23,22 @@ let rateLimitCleanupTimer = null;
 const rateLimitLocks = new Map();
 
 const getClientIp = (req) => {
-  const forwarded = req.headers['x-forwarded-for'];
-  if (typeof forwarded === 'string') {
-    const ip = forwarded.split(',')[0].trim();
-    if (ip.startsWith('::ffff:')) {
-      return ip.substring(7);
+  // Rate limiting must key on the unspoofable transport peer. `X-Forwarded-For`
+  // is attacker-controlled and `trust proxy` is enabled, so trusting it would
+  // let an attacker reset the bucket on every guess (unlimited brute force).
+  // Only honor the forwarded header when a trusted proxy is explicitly enabled.
+  const trustProxy = process.env.ORBIT_TRUST_PROXY === '1' || process.env.ORBIT_TRUST_PROXY === 'true';
+  if (trustProxy) {
+    const forwarded = req.headers['x-forwarded-for'];
+    if (typeof forwarded === 'string') {
+      const forwardedIp = forwarded.split(',')[0].trim();
+      if (forwardedIp) {
+        return forwardedIp.startsWith('::ffff:') ? forwardedIp.substring(7) : forwardedIp;
+      }
     }
-    return ip;
   }
 
-  const ip = req.ip || req.connection?.remoteAddress;
+  const ip = req.socket?.remoteAddress || req.connection?.remoteAddress || req.ip;
   if (ip) {
     if (ip.startsWith('::ffff:')) {
       return ip.substring(7);

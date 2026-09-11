@@ -41,6 +41,7 @@ import { ScrollShadow } from '@/components/ui/ScrollShadow';
 import { toast } from '@/components/ui';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
 import { getProjectLabel, normalizePath } from './mobilePaths';
+import { isPathWithinProject } from '@/components/session/sidebar/utils';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import { useI18n } from '@/lib/i18n';
 import { matchesRankQuery, rankByQuery } from '@/lib/search/fuzzySearch';
@@ -126,6 +127,10 @@ type ProjectNode = {
   isActive: boolean;
 };
 
+// Synthetic container for sessions whose directory matches no registered
+// project; it must not offer project edit/remove actions.
+const ALL_SESSIONS_PROJECT_ID = '__orbit_all_sessions__';
+
 const SESSIONS_PER_BUCKET = 7;
 
 // Left padding for session rows so the title's first letter aligns with its
@@ -180,8 +185,23 @@ const findExactWorktreeMatch = (project: ProjectMeta, normalizedDirectory: strin
 );
 
 const projectMatchesExactDirectory = (project: ProjectMeta, normalizedDirectory: string): boolean => (
-  normalizedDirectory === project.path || Boolean(findExactWorktreeMatch(project, normalizedDirectory))
+  normalizedDirectory === project.path
+  || Boolean(findExactWorktreeMatch(project, normalizedDirectory))
+  // Sessions opened in a subdirectory of the project still belong to it.
+  || isPathWithinProject(normalizedDirectory, project.path)
 );
+
+// Longest-prefix match so a session under a nested project
+// (e.g. /Users/ty/coding-projects/orbit) is not swallowed by its parent
+// (/Users/ty).
+const findDeepestProjectNode = (nodes: ProjectNode[], normalizedDirectory: string): ProjectNode | null => {
+  let best: ProjectNode | null = null;
+  for (const node of nodes) {
+    if (!projectMatchesExactDirectory(node.project, normalizedDirectory)) continue;
+    if (!best || (node.project.path?.length ?? 0) > (best.project.path?.length ?? 0)) best = node;
+  }
+  return best;
+};
 
 const findExactProjectMatch = (projects: ProjectMeta[], directory: string): ProjectMeta | null => {
   const normalizedDirectory = normalizePath(directory);
@@ -1075,7 +1095,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
       const directory = getSessionDirectory(session);
       if (!directory) continue;
       const normalizedDirectory = normalizePath(directory);
-      const node = nodes.find((entry) => projectMatchesExactDirectory(entry.project, normalizedDirectory));
+      const node = findDeepestProjectNode(nodes, normalizedDirectory);
       if (!node) {
         // Sessions in directories not registered as a project (e.g. server-side
         // workspaces the app hasn't imported) must still be reachable, so group
@@ -1095,7 +1115,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
     if (unmatchedByDirectory.size > 0) {
       const fallback: ProjectNode = {
         project: {
-          id: '__orbit_all_sessions__',
+          id: ALL_SESSIONS_PROJECT_ID,
           label: 'All sessions',
           path: '',
           isGitRepo: false,
@@ -1515,7 +1535,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
               ) : null}
             </div>
           </div>
-          {projectsMeta.length === 0 ? (
+          {projectsMeta.length === 0 && projectNodes.length === 0 ? (
             <MobileSessionsEmpty
               title={t('mobile.sessions.empty.noProjectsTitle')}
               description={t('mobile.sessions.empty.noProjectsDescription')}
@@ -1654,7 +1674,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
                       actionsWidth={96}
                       revealed={revealedRowId === `project:${node.project.id}`}
                       onRevealedChange={(nextRevealed) => handleRowKeyRevealedChange(`project:${node.project.id}`, nextRevealed)}
-                      actions={(
+                      actions={node.project.id === ALL_SESSIONS_PROJECT_ID ? undefined : (
                         <>
                           <button
                             type="button"

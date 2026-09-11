@@ -1620,10 +1620,14 @@ async function main(options = {}) {
 
   if (isV2BackendMode()) {
     const compatPort = port === 0 ? 3011 : port;
-    openCodeNetworkState.compatSelfBase = `http://127.0.0.1:${compatPort}/internal/oc2`;
+    // Per-process secret embedded in the internal base URL so the compat layer
+    // is unreachable by anything that does not know it (tunnels included).
+    const compatToken = crypto.randomBytes(24).toString('hex');
+    openCodeNetworkState.compatSelfBase = `http://127.0.0.1:${compatPort}/internal/oc2/${compatToken}`;
     app.use(
       '/internal/oc2',
       registerV2CompatRoutes(app, {
+        compatToken,
         resolveTargetBase: () => {
           const configured = process.env.OPENCODE_HOST?.trim().replace(/\/+$/, '');
           return configured || openCodeBaseUrl || `http://127.0.0.1:${openCodePort}`;

@@ -17,7 +17,8 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process';
-import { closeSync, mkdirSync, openSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,7 +31,23 @@ const DATA_DIR = join(SUPPORT, 'data');
 
 const SERVER_PORT = Number(process.env.ORBIT_PORT || 3011);
 const BACKEND_PORT = Number(process.env.ORBIT_BACKEND_PORT || 4099);
-const UI_PASSWORD = process.env.ORBIT_PASSWORD || 'orbit2026';
+// The UI password gates a 0.0.0.0 bind, so it must not be a shared default.
+// Prefer an explicit env override, else a persisted per-install random secret.
+const resolveUiPassword = () => {
+  const fromEnv = process.env.ORBIT_PASSWORD;
+  if (typeof fromEnv === 'string' && fromEnv.trim()) return fromEnv.trim();
+  const secretFile = join(SUPPORT, 'ui-password');
+  try {
+    const existing = readFileSync(secretFile, 'utf8').trim();
+    if (existing) return existing;
+  } catch {
+    // No persisted secret yet.
+  }
+  const generated = randomBytes(24).toString('base64url');
+  try { writeFileSync(secretFile, generated, { mode: 0o600 }); } catch {}
+  return generated;
+};
+const UI_PASSWORD = resolveUiPassword();
 const START_TIMEOUT_MS = 60 * 1000;
 
 const OPENCODE2_BIN = join(homedir(), '.local', 'lib', 'node_modules', '@opencode-ai', 'cli', 'bin', 'opencode2.exe');
@@ -68,43 +85,90 @@ const spawnLogged = (name, command, args, env, cwd = ROOT) => {
   closeSync(out);
   closeSync(err);
   child.on('exit', (code) => log(`${name} exited`, code));
+  child.on('error', (error) => log(`${name} spawn error: ${error.message}`));
   return child;
 };
 
-const waitForHealth = async (url, headers = {}) => {
-  const deadline = Date.now() + START_TIMEOUT_MS;
+const waitForHealth = async (url, headers = {}, { timeoutMs = START_TIMEOUT_MS, validate } = {}) => {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
       const res = await fetch(url, { headers, signal: AbortSignal.timeout(3000) });
-      if (res.ok) return true;
+      if (res.ok) {
+        const contentType = res.headers.get('content-type') || '';
+        if (!contentType.includes('application/json')) {
+          // A foreign listener can answer 200 with HTML; keep waiting.
+        } else {
+          const body = await res.json().catch(() => null);
+          if (!validate || validate(body)) return { ok: true, body };
+        }
+      }
     } catch {}
     await sleep(400);
   }
-  return false;
+  return { ok: false, body: null };
+};
+
+// Only ever signal a listener we own. Anything else on the port is left alone.
+const isOrbitProcess = (pid) => {
+  try {
+    const res = spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' });
+    const command = (res.stdout || '').trim();
+    return /cli\.js serve|desktop-service\.mjs|opencode2|orbit-mobile/.test(command);
+  } catch {
+    return false;
+  }
 };
 
 const killPort = (port) => {
   const res = spawnSync('lsof', ['-ti', `tcp:${port}`, '-sTCP:LISTEN'], { encoding: 'utf8' });
-  for (const pid of (res.stdout || '').trim().split(/\s+/).filter(Boolean)) {
-    try { process.kill(Number(pid), 'SIGTERM'); } catch {}
+  const pids = (res.stdout || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(Number)
+    .filter((pid) => Number.isFinite(pid) && pid > 1 && pid !== process.pid);
+  let killed = 0;
+  for (const pid of pids) {
+    if (!isOrbitProcess(pid)) {
+      log(`refusing to signal unrelated pid ${pid} on :${port}`);
+      continue;
+    }
+    try { process.kill(pid, 'SIGTERM'); killed += 1; } catch {}
   }
+  return killed;
 };
 
 let backend = null;
 let server = null;
 let stopping = false;
 
-const stop = (reason) => {
-  if (stopping) return;
+const stop = (reason, { exitCode } = {}) => {
+  if (stopping) {
+    if (exitCode !== undefined) process.exit(exitCode);
+    return;
+  }
   stopping = true;
   log(`stopping (${reason})`);
   // Only ever stop processes we spawned — never the desktop app's daemon.
-  for (const child of [server, backend]) { if (child) { try { child.kill('SIGTERM'); } catch {} } }
+  const children = [server, backend].filter(Boolean);
+  for (const child of children) {
+    try { child.kill('SIGTERM'); } catch {}
+  }
+  // Escalate if a child ignores SIGTERM, but never block exit for long.
+  setTimeout(() => {
+    for (const child of children) {
+      if (child.exitCode === null && !child.killed) {
+        try { child.kill('SIGKILL'); } catch {}
+      }
+    }
+  }, 3000).unref();
   try { rmSync(STATUS_FILE); } catch {}
+  if (exitCode !== undefined) process.exit(exitCode);
 };
 
-process.on('SIGTERM', () => { stop('SIGTERM'); setTimeout(() => process.exit(0), 300); });
-process.on('SIGINT', () => { stop('SIGINT'); setTimeout(() => process.exit(0), 300); });
+process.on('SIGTERM', () => stop('SIGTERM', { exitCode: 0 }));
+process.on('SIGINT', () => stop('SIGINT', { exitCode: 0 }));
 process.on('exit', () => stop('exit'));
 
 const parentAlive = () => {
@@ -112,28 +176,45 @@ const parentAlive = () => {
   try { process.kill(PARENT_PID, 0); return true; } catch { return false; }
 };
 setInterval(() => {
-  if (!parentAlive()) { stop('parent exited'); process.exit(0); }
+  if (!parentAlive()) stop('parent exited', { exitCode: 0 });
 }, 2000);
 
 // Start. In external mode the desktop app owns the daemon; we own only the web
 // server, and must not touch the daemon's port.
 killPort(SERVER_PORT);
 if (!EXTERNAL) killPort(BACKEND_PORT);
+if (stopping) process.exit(0);
 
 if (EXTERNAL) {
   log(`attaching to desktop backend ${externalUrl}`);
+  // The desktop daemon can be down at launch; verify before advertising ready.
+  const auth = { authorization: `Basic ${Buffer.from(`${BACKEND_USERNAME}:${BACKEND_PASSWORD}`).toString('base64')}` };
+  const health = await waitForHealth(`${externalUrl}/api/health`, auth, {
+    timeoutMs: 15_000,
+    validate: (body) => body?.healthy === true,
+  });
+  if (!health.ok) {
+    log(`external backend ${externalUrl} did not report healthy`);
+    stop('external unhealthy', { exitCode: 1 });
+  }
 } else {
   backend = spawnLogged('opencode2', OPENCODE2_BIN, ['serve', '--hostname', '127.0.0.1', '--port', String(BACKEND_PORT)], {
     XDG_DATA_HOME: DATA_DIR,
     OPENCODE_SERVER_PASSWORD: BACKEND_PASSWORD || UI_PASSWORD,
   });
+  backend.on('exit', (code) => {
+    if (!stopping) stop(`backend exited (${code})`, { exitCode: 1 });
+  });
   const auth = { authorization: `Basic ${Buffer.from(`opencode:${BACKEND_PASSWORD || UI_PASSWORD}`).toString('base64')}` };
-  if (!await waitForHealth(`http://127.0.0.1:${BACKEND_PORT}/api/health`, auth)) {
+  const health = await waitForHealth(`http://127.0.0.1:${BACKEND_PORT}/api/health`, auth, {
+    validate: (body) => body?.healthy === true,
+  });
+  if (!health.ok) {
     log('backend failed to start');
-    stop('backend unhealthy');
-    process.exit(1);
+    stop('backend unhealthy', { exitCode: 1 });
   }
 }
+if (stopping) process.exit(0);
 
 const backendUrl = EXTERNAL ? externalUrl : `http://127.0.0.1:${BACKEND_PORT}`;
 const backendPassword = EXTERNAL ? BACKEND_PASSWORD : (BACKEND_PASSWORD || UI_PASSWORD);
@@ -148,12 +229,19 @@ server = spawnLogged('server', NODE_BIN, [CLI_ENTRY, 'serve', '--foreground', '-
   ORBIT_HOST: '0.0.0.0',
   ORBIT_UI_PASSWORD: UI_PASSWORD,
 });
+server.on('exit', (code) => {
+  if (!stopping) stop(`server exited (${code})`, { exitCode: 1 });
+});
+if (stopping) process.exit(0);
 
-if (!await waitForHealth(`http://127.0.0.1:${SERVER_PORT}/health`)) {
+const serverHealth = await waitForHealth(`http://127.0.0.1:${SERVER_PORT}/health`, {}, {
+  validate: (body) => body?.status === 'ok' || typeof body?.openCodePort !== 'undefined',
+});
+if (!serverHealth.ok) {
   log('server failed to start');
-  stop('server unhealthy');
-  process.exit(1);
+  stop('server unhealthy', { exitCode: 1 });
 }
+if (stopping) process.exit(0);
 
 writeFileSync(STATUS_FILE, JSON.stringify({
   pid: process.pid,
@@ -162,6 +250,6 @@ writeFileSync(STATUS_FILE, JSON.stringify({
   password: UI_PASSWORD,
   sharedBackend: EXTERNAL ? backendUrl : null,
   startedAt: new Date().toISOString(),
-}, null, 2));
+}, null, 2), { mode: 0o600 });
 
 log(`ready on :${SERVER_PORT} (${EXTERNAL ? `shared backend ${backendUrl}` : `own backend :${BACKEND_PORT}`}), parent ${PARENT_PID}`);
