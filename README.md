@@ -199,6 +199,17 @@ In the app, add the Mac's Tailscale address as an instance —
 `http://100.x.y.z:3011` or `http://<machine>.<tailnet>.ts.net:3011` — and unlock
 with the UI password. It reconnects automatically once Orbit is open.
 
+The UI password is a **per-install random secret** stored at
+`~/Library/Application Support/OrbitMobile/ui-password`, not a shared default.
+Read it (or set `ORBIT_PASSWORD` to override):
+
+```sh
+cat "$HOME/Library/Application Support/OrbitMobile/ui-password"
+```
+
+Because the server binds `0.0.0.0`, that password is the boundary; keep it
+private and keep the tailnet closed.
+
 #### Without the desktop app (manual)
 
 If you want the stack up without opening Orbit, run it yourself:
