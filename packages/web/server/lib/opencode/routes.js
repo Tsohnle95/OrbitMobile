@@ -418,7 +418,11 @@ ${desktopReturn ? `<a class="return" href="orbit://focus/mcp-auth">Return to Orb
   app.put('/api/config/settings', async (req, res) => {
     try {
       const updated = await persistSettings(req.body ?? {});
-      res.json(updated);
+      // Match GET: the response must carry the backend's project directories too,
+      // otherwise the client's post-save settings event would overwrite its
+      // project list with only the locally persisted entries.
+      const directories = await readBackendProjectDirectories();
+      res.json(mergeProjectDirectories(updated, directories));
     } catch (error) {
       console.error('[API:PUT /api/config/settings] Failed to save settings:', error);
       console.error('[API:PUT /api/config/settings] Error stack:', error.stack);

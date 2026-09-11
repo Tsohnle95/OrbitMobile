@@ -1,6 +1,6 @@
 {
   "name": "orbit-mobile",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Orbit mobile companion workspace: Capacitor shell, web UI, and server",
   "private": true,
   "type": "module",
