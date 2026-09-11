@@ -80,27 +80,40 @@ failing layers.
 
 ## Build
 
-Requires bun 1.3+, Node 22+, JDK 21 (`/opt/homebrew/opt/openjdk@21`), and the
-Android SDK (`~/Library/Android/sdk`; recorded per machine in
-`packages/mobile/android/local.properties`).
+Pinned toolchain (verified working):
+
+- bun 1.3.14 (`packageManager`), Node 22+ (`.nvmrc`)
+- JDK 21 — default `/opt/homebrew/opt/openjdk@21`, override with `JAVA_HOME`
+- Android SDK — default `/opt/homebrew/share/android-commandlinetools`,
+  override with `ANDROID_HOME` / `ANDROID_SDK_ROOT`
+
+Every mobile command runs through `scripts/with-mobile-env.mjs`, which resolves
+`DEVELOPER_DIR` / `JAVA_HOME` / `ANDROID_HOME` and prepends the tool dirs to
+`PATH`. Override those env vars instead of editing the script.
 
 ```sh
-bun install                         # workspace deps + patches
-bun run type-check                  # tsc over ui, web, mobile configs
-bun run build                       # vite web build → mobile/dist assets
-bunx --cwd packages/mobile cap sync android
-node scripts/generate-orbit-assets.mjs   # regenerates icon/splash sources from resources/
-cd packages/mobile/android && ./gradlew assembleDebug
+bun install                      # workspace deps + patches
+bun run type-check               # tsc over ui, web, mobile configs
+
+# Android — no Xcode/CocoaPods required:
+bun run build:android:debug      # web build → prepare assets → cap sync android → gradle assembleDebug
+bun run android:run              # install + launch on the connected device
 ```
 
-The debug build signs with `android/debug.keystore` (auto-created,
-gitignored) so no `~/.android` access is needed. Release builds sign via env
-vars — `ORBIT_ANDROID_KEYSTORE_PATH`, `ORBIT_ANDROID_KEYSTORE_PASSWORD`,
-`ORBIT_ANDROID_KEY_ALIAS`, `ORBIT_ANDROID_KEY_PASSWORD`. A keystore for the
-`com.orbit.mobile` application id already exists at the workspace root as
-`omni-release.jks` (untracked; see `keystore.properties`).
-
 APK output: `packages/mobile/android/app/build/outputs/apk/debug/app-debug.apk`.
+
+`sync` targets **Android only**, so a machine without CocoaPods can build the
+Android app. Run `bun run sync:ios` (requires CocoaPods + Xcode) only when
+working on iOS. `node scripts/generate-orbit-assets.mjs` regenerates icon/splash
+sources from `resources/` when branding assets change.
+
+The debug build signs with `android/debug.keystore` (auto-created, gitignored)
+so no `~/.android` access is needed. Release builds sign only when these env
+vars are all set — `ORBIT_ANDROID_KEYSTORE_PATH`,
+`ORBIT_ANDROID_KEYSTORE_PASSWORD`, `ORBIT_ANDROID_KEY_ALIAS`,
+`ORBIT_ANDROID_KEY_PASSWORD`. A keystore for the `com.orbit.mobile` application
+id exists at the workspace root as `omni-release.jks` (untracked — back it up
+off-machine; `keystore.properties` is currently unused by Gradle).
 
 ## Run
 
