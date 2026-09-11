@@ -167,6 +167,40 @@ Known limitation: letting the mobile server **manage** its own v2 backend
 a not-yet-populated port and builds `http://127.0.0.1:null/api/health`. Use the
 external-backend form above until that is fixed.
 
+### Reach it from anywhere (Tailscale) — persistent macOS service
+
+This is the intended setup: both processes run at login under `launchd`, bound
+to `0.0.0.0`, and the phone connects over Tailscale from any network.
+
+```sh
+tailscale up                       # once, on the Mac; install + log in on the phone too
+node scripts/install-service.mjs install
+```
+
+That installs two launchd agents (edit the constants at the top of the script —
+ports, password, data dir):
+
+| Service | What | Endpoint |
+|---|---|---|
+| `com.orbitmobile.opencode2` | v2 backend, isolated `XDG_DATA_HOME` | `127.0.0.1:4099` |
+| `com.orbitmobile.server` | Orbit server, v2 compat, external backend | `0.0.0.0:3011` |
+
+Then in the app, add the Mac's Tailscale address as an instance —
+`http://100.x.y.z:3011` or `http://<machine>.<tailnet>.ts.net:3011` — and unlock
+with `ORBIT_UI_PASSWORD`. It reconnects automatically on launch.
+
+```sh
+# logs / control
+tail -f "~/Library/Application Support/OrbitMobile/logs/server.log"
+launchctl list | grep orbitmobile
+node scripts/install-service.mjs uninstall
+```
+
+The backend is deliberately isolated from the desktop Orbit app's opencode data
+(`XDG_DATA_HOME=~/Library/Application Support/OrbitMobile/data`) so the two
+don't collide. Because the service binds `0.0.0.0`, `ORBIT_UI_PASSWORD` is what
+gates access — keep it set, and keep the tailnet private.
+
 Notes:
 
 - Push notifications are disabled until a `google-services.json` for our own
