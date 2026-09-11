@@ -1862,6 +1862,15 @@ export const syncDesktopSettings = async (): Promise<void> => {
     } catch (error) {
       console.warn('applyDesktopUiPreferences failed:', error);
     }
+    // Projects are server-authoritative on shared runtimes: adopt them so the
+    // workspaces and sessions from the desktop appear without a relaunch
+    // (the store otherwise only reads the persisted list at import time).
+    try {
+      const { useProjectsStore } = await import('@/stores/useProjectsStore');
+      useProjectsStore.getState().synchronizeFromSettings(authoritativeSettings);
+    } catch (error) {
+      console.warn('project settings sync failed:', error);
+    }
     const migrationPatch: Partial<DesktopSettings> = {};
     if (shouldPersistCraftGoalMigration) {
       if (authoritativeSettings.draftStarters) {
