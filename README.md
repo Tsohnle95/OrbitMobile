@@ -210,6 +210,19 @@ cat "$HOME/Library/Application Support/OrbitMobile/ui-password"
 Because the server binds `0.0.0.0`, that password is the boundary; keep it
 private and keep the tailnet closed.
 
+Paired devices hold a **non-expiring** client token (stored in the phone's
+keychain). It is invalidated only by explicit revocation or by reinstalling the
+app — not by time, restarts, or password changes. List and revoke paired
+devices:
+
+```sh
+# list (authenticated): ids, labels, last use
+curl -s -b "$JAR" http://127.0.0.1:3011/api/client-auth/clients
+# revoke one, or purge all revoked records
+curl -s -b "$JAR" -X DELETE http://127.0.0.1:3011/api/client-auth/clients/<id>
+curl -s -b "$JAR" -X DELETE http://127.0.0.1:3011/api/client-auth/clients
+```
+
 #### Without the desktop app (manual)
 
 If you want the stack up without opening Orbit, run it yourself:
