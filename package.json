@@ -1,6 +1,6 @@
 {
   "name": "orbit-mobile",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Orbit mobile companion workspace: Capacitor shell, web UI, and server",
   "private": true,
   "type": "module",
@@ -18,6 +18,8 @@
     "build:ui": "bun run --cwd packages/ui build",
     "sync": "bun run --cwd packages/mobile sync",
     "build:android:debug": "bun run --cwd packages/mobile build:android:debug",
+    "build:android:release": "bun run --cwd packages/mobile build:android:release",
+    "dist:android": "bun run --cwd packages/mobile build:android:release && node scripts/copy-android-dist.mjs",
     "android:devices": "bun run --cwd packages/mobile android:devices",
     "android:install": "bun run --cwd packages/mobile android:install",
     "android:launch": "bun run --cwd packages/mobile android:launch",

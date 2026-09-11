@@ -107,13 +107,24 @@ Android app. Run `bun run sync:ios` (requires CocoaPods + Xcode) only when
 working on iOS. `node scripts/generate-orbit-assets.mjs` regenerates icon/splash
 sources from `resources/` when branding assets change.
 
-The debug build signs with `android/debug.keystore` (auto-created, gitignored)
-so no `~/.android` access is needed. Release builds sign only when these env
-vars are all set — `ORBIT_ANDROID_KEYSTORE_PATH`,
-`ORBIT_ANDROID_KEYSTORE_PASSWORD`, `ORBIT_ANDROID_KEY_ALIAS`,
-`ORBIT_ANDROID_KEY_PASSWORD`. A keystore for the `com.orbit.mobile` application
-id exists at the workspace root as `omni-release.jks` (untracked — back it up
-off-machine; `keystore.properties` is currently unused by Gradle).
+### Signing and versioning
+
+Sideload and release builds share **one identity**. When release keystore
+credentials are available — env vars `ORBIT_ANDROID_KEYSTORE_PATH` /
+`_KEYSTORE_PASSWORD` / `_KEY_ALIAS` / `_KEY_PASSWORD`, or a `keystore.properties`
+found in `android/`, `packages/mobile/`, or the repo root — both the `debug` and
+`release` build types sign with it, so each new build installs **in place** over
+the previous one. Without it, `debug` falls back to `android/debug.keystore`
+(auto-created, gitignored). The release keystore (`omni-release.jks`, alias
+`omniagent`) is untracked — back it up off-machine.
+
+`versionName` comes from the root `package.json`; `versionCode` defaults to the
+git commit count. Override with `ORBIT_ANDROID_VERSION_NAME` /
+`ORBIT_ANDROID_VERSION_CODE` (CI). Build a shareable, signed APK:
+
+```sh
+bun run dist:android   # release build → dist/orbit-mobile-<version>.apk (+ SHA-256)
+```
 
 ## Run
 
@@ -127,6 +138,34 @@ off-machine; `keystore.properties` is currently unused by Gradle).
 
 2. Install the APK on the phone, enter the server URL (e.g. Tailscale
    `http://100.x.y.z:3010`) and password, or scan the pairing QR.
+
+### opencode v2 backend (recommended)
+
+The app/server work best against a v2 (`opencode2`) backend. Run it as an
+**external** server with a fixed password and point the mobile server at it
+with the compat layer enabled:
+
+```sh
+# 1) v2 backend
+OPENCODE_SERVER_PASSWORD=changeme opencode2 serve --port 4099 --hostname 127.0.0.1
+
+# 2) mobile server (v2 compat, external backend)
+ORBIT_OPENCODE_V2=1 \
+OPENCODE_HOST=http://127.0.0.1:4099 \
+OPENCODE_SKIP_START=true \
+OPENCODE_SERVER_PASSWORD=changeme \
+ORBIT_HOST=0.0.0.0 ORBIT_UI_PASSWORD=… \
+  node bin/cli.js serve --foreground --port 3010
+```
+
+`OPENCODE_SERVER_PASSWORD` must match on both processes (the server sends it as
+Basic auth). With this stack `scripts/e2e-audit.mjs` passes 17/17, including
+live streaming and the app's send path.
+
+Known limitation: letting the mobile server **manage** its own v2 backend
+(without `OPENCODE_HOST`) currently fails readiness — the v2 compat layer reads
+a not-yet-populated port and builds `http://127.0.0.1:null/api/health`. Use the
+external-backend form above until that is fixed.
 
 Notes:
 

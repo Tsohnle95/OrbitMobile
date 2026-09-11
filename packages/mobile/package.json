@@ -11,6 +11,7 @@
     "add:ios": "cap add ios",
     "add:android": "cap add android",
     "build:android:debug": "node scripts/with-mobile-env.mjs \"bun run sync && ./android/gradlew -p android assembleDebug\"",
+    "build:android:release": "node scripts/with-mobile-env.mjs \"bun run sync && ./android/gradlew -p android assembleRelease\"",
     "android:devices": "node scripts/with-mobile-env.mjs \"node scripts/android-device.mjs devices\"",
     "android:install": "node scripts/with-mobile-env.mjs \"node scripts/android-device.mjs install\"",
     "android:launch": "node scripts/with-mobile-env.mjs \"node scripts/android-device.mjs launch\"",

@@ -1,13 +1,71 @@
+import groovy.json.JsonSlurper
+
 apply plugin: 'com.android.application'
 
-def ciVersionCode = System.getenv('ORBIT_ANDROID_VERSION_CODE')
-def ciVersionName = System.getenv('ORBIT_ANDROID_VERSION_NAME')
-def ciKeystorePath = System.getenv('ORBIT_ANDROID_KEYSTORE_PATH')
-def ciKeystorePassword = System.getenv('ORBIT_ANDROID_KEYSTORE_PASSWORD')
-def ciKeyAlias = System.getenv('ORBIT_ANDROID_KEY_ALIAS')
-def ciKeyPassword = System.getenv('ORBIT_ANDROID_KEY_PASSWORD')
-def hasCiSigning = ciKeystorePath && ciKeystorePassword && ciKeyAlias && ciKeyPassword
+// ---------------------------------------------------------------------------
+// Signing
+//
+// Sideload builds share one identity (the release keystore) so every new build
+// installs in place over the previous one. Credentials are read, in order, from:
+//   1. env vars  ORBIT_ANDROID_KEYSTORE_PATH / _KEYSTORE_PASSWORD / _KEY_ALIAS / _KEY_PASSWORD
+//   2. the first keystore.properties found in android/, packages/mobile/, or the repo root
+// The keystore files and keystore.properties are gitignored.
+// ---------------------------------------------------------------------------
+def keystorePropsFile = [
+    rootProject.file('keystore.properties'),
+    rootProject.file('../../keystore.properties'),
+    rootProject.file('../../../keystore.properties'),
+].find { it.exists() }
+
+def keystoreProps = new Properties()
+if (keystorePropsFile) {
+    keystorePropsFile.withInputStream { keystoreProps.load(it) }
+}
+
+def resolveStoreFile = { value ->
+    if (!value) return null
+    def f = new File(value.toString())
+    if (f.isAbsolute()) return f
+    return keystorePropsFile ? new File(keystorePropsFile.parentFile, value.toString()) : f
+}
+
+def releaseStoreFilePath = System.getenv('ORBIT_ANDROID_KEYSTORE_PATH') ?: keystoreProps.getProperty('storeFile')
+def releaseStorePassword = System.getenv('ORBIT_ANDROID_KEYSTORE_PASSWORD') ?: keystoreProps.getProperty('storePassword')
+def releaseKeyAlias = System.getenv('ORBIT_ANDROID_KEY_ALIAS') ?: keystoreProps.getProperty('keyAlias')
+def releaseKeyPassword = System.getenv('ORBIT_ANDROID_KEY_PASSWORD') ?: keystoreProps.getProperty('keyPassword')
+def hasReleaseSigning = releaseStoreFilePath && releaseStorePassword && releaseKeyAlias && releaseKeyPassword
+def releaseStoreFile = resolveStoreFile(releaseStoreFilePath)
+
 def localDebugKeystore = rootProject.file('debug.keystore')
+
+// ---------------------------------------------------------------------------
+// Versioning
+//
+// versionName comes from the workspace package.json (single source of truth).
+// versionCode defaults to the git commit count (monotonic on a linear branch).
+// Both can be overridden by ORBIT_ANDROID_VERSION_NAME / _VERSION_CODE (CI).
+// ---------------------------------------------------------------------------
+def packageVersionName = '0.0.0'
+try {
+    def pkg = new JsonSlurper().parse(rootProject.file('../../../package.json'))
+    if (pkg?.version) packageVersionName = pkg.version.toString()
+} catch (Exception ignored) {
+    logger.lifecycle('Could not read workspace package.json version; using 0.0.0')
+}
+
+def gitCommitCount = {
+    try {
+        def proc = ['git', 'rev-list', '--count', 'HEAD'].execute(null, rootProject.projectDir)
+        proc.waitFor()
+        def count = proc.text.trim() as Integer
+        return count > 0 ? count : 1
+    } catch (Exception ignored) {
+        return 1
+    }
+}
+
+def resolvedVersionCode = (System.getenv('ORBIT_ANDROID_VERSION_CODE') ?: gitCommitCount().toString()).toInteger()
+def resolvedVersionName = System.getenv('ORBIT_ANDROID_VERSION_NAME') ?: packageVersionName
 
 android {
     namespace "com.orbit.mobile"
@@ -16,8 +74,8 @@ android {
         applicationId "com.orbit.mobile"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode ciVersionCode ? ciVersionCode.toInteger() : 1
-        versionName ciVersionName ?: "1.0"
+        versionCode resolvedVersionCode
+        versionName resolvedVersionName
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
@@ -26,11 +84,11 @@ android {
     }
     signingConfigs {
         release {
-            if (hasCiSigning) {
-                storeFile file(ciKeystorePath)
-                storePassword ciKeystorePassword
-                keyAlias ciKeyAlias
-                keyPassword ciKeyPassword
+            if (hasReleaseSigning) {
+                storeFile releaseStoreFile
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
             }
         }
         debug {
@@ -44,12 +102,16 @@ android {
     }
     buildTypes {
         debug {
-            if (localDebugKeystore.exists()) {
+            // Sideload builds use the release identity when available so updates
+            // install in place instead of failing on a signature mismatch.
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            } else if (localDebugKeystore.exists()) {
                 signingConfig signingConfigs.debug
             }
         }
         release {
-            if (hasCiSigning) {
+            if (hasReleaseSigning) {
                 signingConfig signingConfigs.release
             }
             minifyEnabled false
@@ -82,4 +144,13 @@ try {
     }
 } catch(Exception e) {
     logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}
+
+// Surface the resolved identity on every build so it is obvious which artifact
+// was produced with which signing key.
+tasks.matching { it.name in ['assembleDebug', 'assembleRelease'] }.configureEach {
+    doFirst {
+        logger.lifecycle("[orbit-mobile] versionName=${resolvedVersionName} versionCode=${resolvedVersionCode} " +
+            "signing=${hasReleaseSigning ? 'release-keystore' : (localDebugKeystore.exists() ? 'debug-keystore' : 'NONE')}")
+    }
 }
