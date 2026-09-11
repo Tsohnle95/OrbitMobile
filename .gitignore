@@ -6,3 +6,10 @@ keystore.properties
 google-services.json
 .cxx/
 debug.keystore
+
+# Node / build artifacts
+node_modules/
+dist/
+*.log
+*.tsbuildinfo
+.DS_Store
