@@ -183,10 +183,17 @@ The desktop app spawns `scripts/desktop-service.mjs`, which watches the app's
 process id and tears the whole stack down if the app exits or crashes. Nothing
 runs while the app is closed.
 
+**Sessions are shared with the desktop.** The agent attaches to the desktop
+app's global opencode2 daemon (`ORBIT_EXTERNAL_BACKEND=1`, discovered via the
+`@opencode-ai/client` service registration), so you can resume a desktop
+conversation on the phone and phone-created sessions show up on the desktop.
+If no desktop daemon is available, it falls back to its own isolated backend
+(`XDG_DATA_HOME=~/Library/Application Support/OrbitMobile/data`).
+
 | Process | What | Endpoint |
 |---|---|---|
-| `opencode2` | v2 backend, isolated `XDG_DATA_HOME` | `127.0.0.1:4099` |
-| Orbit server | v2 compat, external backend | `0.0.0.0:3011` |
+| desktop daemon | shared with the desktop app | `127.0.0.1:<assigned>` |
+| Orbit server | v2 compat, attached to the daemon | `0.0.0.0:3011` |
 
 In the app, add the Mac's Tailscale address as an instance —
 `http://100.x.y.z:3011` or `http://<machine>.<tailnet>.ts.net:3011` — and unlock

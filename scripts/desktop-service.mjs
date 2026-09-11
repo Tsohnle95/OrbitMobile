@@ -2,16 +2,18 @@
 /**
  * Desktop-tied Orbit Mobile service.
  *
- * Runs the v2 opencode2 backend + Orbit web server in the foreground, owned by
- * a parent process (the Orbit desktop app). It watches the parent and shuts
- * everything down the moment the parent exits — including a hard kill — so
- * "desktop app open = mobile works, desktop app closed = it stops" holds even
- * if the app crashes.
+ * Runs the Orbit web server for as long as a parent process (the Orbit desktop
+ * app) is alive, and tears it down the moment the parent exits — including a
+ * hard kill — so "desktop app open = mobile works, desktop app closed = it
+ * stops" holds even if the app crashes.
+ *
+ * Two modes:
+ *   - External backend (ORBIT_EXTERNAL_BACKEND=1 + OPENCODE_HOST): attach to
+ *     the desktop app's shared OpenCode daemon so mobile and desktop share
+ *     sessions. This is the normal desktop-tied mode.
+ *   - Own backend (fallback): spawn an isolated opencode2 on BACKEND_PORT.
  *
  *   node scripts/desktop-service.mjs --parent-pid <pid>
- *
- * Writes run/desktop-status.json while running so the desktop app can show the
- * connection URL.
  */
 
 import { spawn, spawnSync } from 'node:child_process';
@@ -28,13 +30,19 @@ const DATA_DIR = join(SUPPORT, 'data');
 
 const SERVER_PORT = Number(process.env.ORBIT_PORT || 3011);
 const BACKEND_PORT = Number(process.env.ORBIT_BACKEND_PORT || 4099);
-const PASSWORD = process.env.ORBIT_PASSWORD || 'orbit2026';
+const UI_PASSWORD = process.env.ORBIT_PASSWORD || 'orbit2026';
 const START_TIMEOUT_MS = 60 * 1000;
 
 const OPENCODE2_BIN = join(homedir(), '.local', 'lib', 'node_modules', '@opencode-ai', 'cli', 'bin', 'opencode2.exe');
 const NODE_BIN = process.execPath;
 const CLI_ENTRY = join(ROOT, 'packages', 'web', 'bin', 'cli.js');
 const STATUS_FILE = join(RUN_DIR, 'desktop-status.json');
+
+// Attach to the desktop app's shared daemon when it hands us one.
+const externalUrl = process.env.ORBIT_EXTERNAL_BACKEND === '1' ? (process.env.OPENCODE_HOST || '').trim() : '';
+const EXTERNAL = externalUrl.length > 0;
+const BACKEND_USERNAME = process.env.OPENCODE_SERVER_USERNAME || 'opencode';
+const BACKEND_PASSWORD = process.env.OPENCODE_SERVER_PASSWORD || '';
 
 const argParent = (() => {
   const i = process.argv.indexOf('--parent-pid');
@@ -63,11 +71,11 @@ const spawnLogged = (name, command, args, env, cwd = ROOT) => {
   return child;
 };
 
-const waitForHealth = async (port, path, headers = {}) => {
+const waitForHealth = async (url, headers = {}) => {
   const deadline = Date.now() + START_TIMEOUT_MS;
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(`http://127.0.0.1:${port}${path}`, { headers, signal: AbortSignal.timeout(3000) });
+      const res = await fetch(url, { headers, signal: AbortSignal.timeout(3000) });
       if (res.ok) return true;
     } catch {}
     await sleep(400);
@@ -90,6 +98,7 @@ const stop = (reason) => {
   if (stopping) return;
   stopping = true;
   log(`stopping (${reason})`);
+  // Only ever stop processes we spawned — never the desktop app's daemon.
   for (const child of [server, backend]) { if (child) { try { child.kill('SIGTERM'); } catch {} } }
   try { rmSync(STATUS_FILE); } catch {}
 };
@@ -98,7 +107,6 @@ process.on('SIGTERM', () => { stop('SIGTERM'); setTimeout(() => process.exit(0),
 process.on('SIGINT', () => { stop('SIGINT'); setTimeout(() => process.exit(0), 300); });
 process.on('exit', () => stop('exit'));
 
-// Watch the parent: if it dies, take the whole stack with it.
 const parentAlive = () => {
   if (!PARENT_PID) return true;
   try { process.kill(PARENT_PID, 0); return true; } catch { return false; }
@@ -107,32 +115,41 @@ setInterval(() => {
   if (!parentAlive()) { stop('parent exited'); process.exit(0); }
 }, 2000);
 
-// Start the stack.
-for (const port of [SERVER_PORT, BACKEND_PORT]) { try { killPort(port); } catch {} }
+// Start. In external mode the desktop app owns the daemon; we own only the web
+// server, and must not touch the daemon's port.
+killPort(SERVER_PORT);
+if (!EXTERNAL) killPort(BACKEND_PORT);
 
-backend = spawnLogged('opencode2', OPENCODE2_BIN, ['serve', '--hostname', '127.0.0.1', '--port', String(BACKEND_PORT)], {
-  XDG_DATA_HOME: DATA_DIR,
-  OPENCODE_SERVER_PASSWORD: PASSWORD,
-});
-
-const backendAuth = { authorization: `Basic ${Buffer.from(`opencode:${PASSWORD}`).toString('base64')}` };
-if (!await waitForHealth(BACKEND_PORT, '/api/health', backendAuth)) {
-  log('backend failed to start');
-  stop('backend unhealthy');
-  process.exit(1);
+if (EXTERNAL) {
+  log(`attaching to desktop backend ${externalUrl}`);
+} else {
+  backend = spawnLogged('opencode2', OPENCODE2_BIN, ['serve', '--hostname', '127.0.0.1', '--port', String(BACKEND_PORT)], {
+    XDG_DATA_HOME: DATA_DIR,
+    OPENCODE_SERVER_PASSWORD: BACKEND_PASSWORD || UI_PASSWORD,
+  });
+  const auth = { authorization: `Basic ${Buffer.from(`opencode:${BACKEND_PASSWORD || UI_PASSWORD}`).toString('base64')}` };
+  if (!await waitForHealth(`http://127.0.0.1:${BACKEND_PORT}/api/health`, auth)) {
+    log('backend failed to start');
+    stop('backend unhealthy');
+    process.exit(1);
+  }
 }
+
+const backendUrl = EXTERNAL ? externalUrl : `http://127.0.0.1:${BACKEND_PORT}`;
+const backendPassword = EXTERNAL ? BACKEND_PASSWORD : (BACKEND_PASSWORD || UI_PASSWORD);
 
 server = spawnLogged('server', NODE_BIN, [CLI_ENTRY, 'serve', '--foreground', '--port', String(SERVER_PORT)], {
   ORBIT_OPENCODE_V2: '1',
-  OPENCODE_HOST: `http://127.0.0.1:${BACKEND_PORT}`,
+  OPENCODE_HOST: backendUrl,
   OPENCODE_SKIP_START: 'true',
-  OPENCODE_SERVER_PASSWORD: PASSWORD,
+  OPENCODE_SERVER_USERNAME: BACKEND_USERNAME,
+  OPENCODE_SERVER_PASSWORD: backendPassword,
   ORBIT_USER_HOME: homedir(),
   ORBIT_HOST: '0.0.0.0',
-  ORBIT_UI_PASSWORD: PASSWORD,
+  ORBIT_UI_PASSWORD: UI_PASSWORD,
 });
 
-if (!await waitForHealth(SERVER_PORT, '/health')) {
+if (!await waitForHealth(`http://127.0.0.1:${SERVER_PORT}/health`)) {
   log('server failed to start');
   stop('server unhealthy');
   process.exit(1);
@@ -142,8 +159,9 @@ writeFileSync(STATUS_FILE, JSON.stringify({
   pid: process.pid,
   parentPid: PARENT_PID,
   port: SERVER_PORT,
-  password: PASSWORD,
+  password: UI_PASSWORD,
+  sharedBackend: EXTERNAL ? backendUrl : null,
   startedAt: new Date().toISOString(),
 }, null, 2));
 
-log(`ready on :${SERVER_PORT} (backend :${BACKEND_PORT}), parent ${PARENT_PID}`);
+log(`ready on :${SERVER_PORT} (${EXTERNAL ? `shared backend ${backendUrl}` : `own backend :${BACKEND_PORT}`}), parent ${PARENT_PID}`);
