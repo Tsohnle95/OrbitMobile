@@ -755,6 +755,33 @@ export const registerV2CompatRoutes = (app, { resolveTargetBase, getAuthHeaders,
         return;
       }
 
+      if (legacyRoute === '/session' && req.method === 'POST') {
+        // v2 ignores `directory` in the query/header at creation time; it reads
+        // the working directory from the body's `location.directory`. Without
+        // this the session is created in the server's cwd and the agent has to
+        // hunt for the project.
+        const parsed = typeof req.body === 'object' && req.body !== null ? { ...req.body } : {};
+        if (directory && parsed.location?.directory === undefined) {
+          parsed.location = { ...(parsed.location ?? {}), directory };
+        }
+        const response = await fetch(`${targetBase}/api/session${url.search}`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(parsed),
+        });
+        const text = await response.text();
+        let body = text;
+        try { body = JSON.parse(text); } catch { /* non-JSON passes through */ }
+        if (body && typeof body === 'object' && !Array.isArray(body) && 'data' in body && Object.keys(body).length <= 3) {
+          body = body.data;
+        }
+        if (body && typeof body === 'object' && !Array.isArray(body) && body.id) {
+          const [enriched] = withSessionDirectory([body], await fetchProjectDirectories(targetBase, authHeaders));
+          body = enriched;
+        }
+        return sendJson(response.status, body ?? {});
+      }
+
       if (legacyRoute === '/session' && req.method === 'GET') {
         const list = await fetchAllV2Sessions(targetBase, headers);
         return sendJson(200, withSessionDirectory(list, await fetchProjectDirectories(targetBase, authHeaders)));
